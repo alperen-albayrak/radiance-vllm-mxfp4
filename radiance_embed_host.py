@@ -30,6 +30,13 @@ not read back bit-identical, the GPU copy stays and serving continues exactly as
 
 At startup it logs the gather cost through the view against the VRAM copy, at the decode width
 and at the prefill chunk, so the PCIe price on the host at hand is read off the log, not assumed.
+
+MEASURED 2026-09-22, one R9700 at TP=1 (MAXSEQS=4, CHUNK=2560, dflash SPEC=7, Gen4 x8 link):
+model 20.0 -> 17.63 GiB, KV pool 136,441 -> 199,920 tokens, served ceiling 130,240 -> 196,608.
+Bulk readback through the view 12.1 GB/s; gather 16 rows 9.4 -> 21.6 us and 2560 rows 44.6 ->
+1811.8 us, i.e. +12 us on a ~45 ms decode step and +1.8 ms on a ~1.1 s prefill chunk. Cold prefill
+at 124K measured 2,283 t/s against 2,280 before the change, and 2,008 t/s cold at 170K. The drafter
+does follow the module: the 2.37 GiB comes off the load exactly once.
 """
 import os
 import sys
