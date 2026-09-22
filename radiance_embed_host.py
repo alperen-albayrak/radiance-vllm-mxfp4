@@ -37,6 +37,16 @@ Bulk readback through the view 12.1 GB/s; gather 16 rows 9.4 -> 21.6 us and 2560
 1811.8 us, i.e. +12 us on a ~45 ms decode step and +1.8 ms on a ~1.1 s prefill chunk. Cold prefill
 at 124K measured 2,283 t/s against 2,280 before the change, and 2,008 t/s cold at 170K. The drafter
 does follow the module: the 2.37 GiB comes off the load exactly once.
+
+A/B against the flag off (same box, same prompts, 256 forced output tokens), TTFT and ms/step at
+1K/5K/10K/50K/128K: 0.34/1.34/2.81/17.33/52.05 s and 35.9/36.7/37.0/39.5/43.7 ms off, against
+0.33/1.33/2.80/17.21/51.94 s and 35.9/36.6/37.0/39.5/43.7 ms on. Step time is identical to within
+0.1 ms and every prefill row came out fractionally AHEAD with the flag on, i.e. the difference is
+under the noise floor rather than measurable: the A/B bounds the cost at ~1%, it does not resolve
+it. 150K and 180K ran only with the flag on (63.90 s / 81.46 s), having no counterpart without it.
+Compare ms/step, never tok/s: split-K reductions leave the engine non-deterministic run to run, so
+the two arms diverge in generated text and one 10K row read 99.0 vs 115.3 tok/s purely on draft
+acceptance (38.4% vs 46.7%) at an identical 37.0 ms/step; the rerun read 115.4.
 """
 import os
 import sys
