@@ -91,6 +91,11 @@ Everything is an environment variable; these are the ones worth knowing.
   RADIANCE_GDN_LAZY=0       lazy GDN state snapshots (libr4d rx10). DEFAULT OFF: they corrupt
                             multi-turn chat (repeat loops / empty replies from ~5 turns in).
                             Set to 1 only to debug that; never applied at TP>=2.
+  RADIANCE_EMBED_HOST=0     1 = keep the target's embed_tokens (2.37 GiB bf16) in pinned host
+                            memory, read by the GPU over PCIe through a UVA view: that VRAM
+                            goes to the KV cache. Refused (logged, table stays in VRAM) if the
+                            table is tied, quantized, or does not read back bit-exact. KV pins
+                            measured with it are keyed separately (spec column `<spec>+eh`)
   MIN_GPU_MIB=8192          VRAM floor for "usable"; excludes iGPUs from the count
   KV_MEM=auto               KV cache size: auto uses a pin measured for your hardware if
                             kv-profiles.tsv has one and lets vLLM profile if not; <bytes> pins
@@ -303,6 +308,14 @@ if [ -z "${RADIANCE_GDN_LAZY:-}" ]; then
 else
   GDN_LAZY=$RADIANCE_GDN_LAZY
 fi
+# RADIANCE_EMBED_HOST (radiance_embed_host.py, patch_embed_host.py): the target's input embedding
+# in pinned host memory behind a UVA device view. A forward pass reads one 10 KB row per token, so
+# the table can leave VRAM without the GPU streaming it back -- ~16 rows per decode step, 26 MB
+# per 2560-token prefill chunk -- and its 2.37 GiB go to the KV cache (~60k tokens at TP=1).
+# The module logs the measured gather cost through the view at startup. Default OFF until that
+# has been gated on this box. It does not change the traced graph (same shape, dtype and device;
+# only the storage moves), so it shares the compile cache.
+EMBED_HOST=${RADIANCE_EMBED_HOST:-0}
 GPU_IDS=${GPU_IDS:-$RAD_GPU_INDICES}
 # TP=3 via zero-weight dummy heads (radiance_tp3pad.py + patch_tp3_pad.py; TP3_PADDING_PLAN.md).
 # The checkpoint's head counts (24 q / 4 kv / 16 GDN-k / 48 GDN-v) do not divide by 3, so at
@@ -863,7 +876,12 @@ KV_SRC=explicit
 if [ "$KV_MEM" = auto ]; then
   KV_MEM=""; KV_SRC=profiled
   if [ "$GPU_UTIL" = "0.98" ]; then
-    KV_MEM=$(rad_kv_lookup "$RAD_GPU_SIG" "${MAXSEQS:-8}" "$CHUNK" "$MAXLEN" "$SPEC_METHOD")
+    if [ "$EMBED_HOST" = 1 ]; then
+      KV_MEM=$(rad_kv_lookup "$RAD_GPU_SIG" "${MAXSEQS:-8}" "$CHUNK" "$MAXLEN" "$SPEC_METHOD+eh")
+    fi
+    # A pin measured WITHOUT embed-host had 2.37 GiB more in VRAM, so it is conservative with it
+    # on; the reverse is not true, which is why `+eh` rows are never read with the flag off.
+    [ -z "$KV_MEM" ] && KV_MEM=$(rad_kv_lookup "$RAD_GPU_SIG" "${MAXSEQS:-8}" "$CHUNK" "$MAXLEN" "$SPEC_METHOD")
     if [ -n "$KV_MEM" ]; then KV_SRC=measured; fi
   fi
 fi
@@ -882,6 +900,7 @@ if [ "$KV_SRC" = profiled ] && [ "$GPU_UTIL" = "0.98" ]; then
 fi
 echo "[run] cache=$CACHE"
 echo "[run] chat-template=$CHAT_TEMPLATE"
+[ "$EMBED_HOST" = 1 ] && echo "[run] embed-host ON: embed_tokens -> pinned host memory (UVA); see the '[radiance] embed-host:' line for what it measured"
 echo "[run] follow the log with: $RUNTIME logs -f $NAME    stop with: $RUNTIME stop $NAME"
 
 # docker has no --replace, so a container left behind by a previous run has to go first.
@@ -949,6 +968,8 @@ exec ${DRY_RUN:+echo} "$RUNTIME" run "${RT_FLAGS[@]}" --name "$NAME" --privilege
   -e RADIANCE_GDN_FUSED_MAX_ITEMS="$GDN_FUSED_MAX_ITEMS" \
   -e RADIANCE_GDN_TRACE_SIDX="${RADIANCE_GDN_TRACE_SIDX:-0}" \
   -e RADIANCE_GDN_LAZY="$GDN_LAZY" \
+  -e RADIANCE_EMBED_HOST="$EMBED_HOST" \
+  -e RADIANCE_EMBED_HOST_BENCH="${RADIANCE_EMBED_HOST_BENCH:-1}" \
   -e RADIANCE_DYNAMIC_WIDTH="${RADIANCE_DYNAMIC_WIDTH:-1}" \
   -e RADIANCE_DYNW_ALPHA="${RADIANCE_DYNW_ALPHA:-0.35}" \
   -e RADIANCE_DYNW_MARGIN="${RADIANCE_DYNW_MARGIN:-2}" \
@@ -1024,6 +1045,7 @@ exec ${DRY_RUN:+echo} "$RUNTIME" run "${RT_FLAGS[@]}" --name "$NAME" --privilege
     python3 patch_ar_qbits.py          # RADIANCE_AR_QBITS: 6 (shipped) | 5 | 4-bit all-reduce wire payload (libr4d rx8+)
     python3 patch_ar_3rank.py
     python3 patch_gdn_glue.py
+    python3 patch_embed_host.py         # RADIANCE_EMBED_HOST=1: embed_tokens in pinned host memory
     # Non-fatal: fixes content=null on thinking-off requests; not required to serve.
     if [ "${RADIANCE_GDN_LAZY:-0}" = 1 ]; then python3 patch_gdn_lazy.py; fi   # TP=1 profile only; after the gdn builder patches it anchors on
     python3 patch_qwen3_thinkoff.py \
@@ -1034,7 +1056,7 @@ exec ${DRY_RUN:+echo} "$RUNTIME" run "${RT_FLAGS[@]}" --name "$NAME" --privilege
     cp radiance_preamble.py /opt/radiance_preamble.py      # banner/preamble from the repo, not the baked copy
     cp radiance_nvfp4.py radiance_mxfp4.py radiance_gdn.py radiance_gdn_lazy.py radiance_rmsquant.py radiance_drafthead.py \
        radiance_verifyhead.py radiance_gdnmerge.py radiance_aroverlap.py radiance_topk.py \
-       radiance_arnq.py radiance_tp3pad.py "$SP"/
+       radiance_arnq.py radiance_tp3pad.py radiance_embed_host.py "$SP"/
     # MXFP4_CUMODE=1 builds the GEMM TU in CU mode (waves of a workgroup confined to one CU of the
     # WGP, LDS partitioned per CU) -- bit-identical output, an occupancy/LDS-placement A/B knob.
     hipcc -O3 -w -std=c++17 -fPIC -shared --offload-arch=gfx1201 $([ "${MXFP4_CUMODE:-0}" = 1 ] && echo -mcumode) \

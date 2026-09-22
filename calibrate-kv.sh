@@ -73,6 +73,11 @@ MAXLEN=${MAXLEN:-262144}
 # search still works from a pin that is known to serve -- pass 2 raises it from there.
 KV_START=${KV_START:-}
 SPEC_METHOD=${SPEC_METHOD:-dflash}
+# The table key's spec column. A pin measured with RADIANCE_EMBED_HOST=1 had the 2.37 GiB embedding
+# out of VRAM and would over-commit a serve without it, so it gets its own key; serve-mxfp4.sh
+# reads `<spec>+eh` only with the flag on. The serves this script starts inherit the flag.
+KV_KEY_SPEC=$SPEC_METHOD
+[ "${RADIANCE_EMBED_HOST:-0}" = 1 ] && KV_KEY_SPEC="$SPEC_METHOD+eh"
 GPU_UTIL=${GPU_UTIL:-0.98}
 NAME=${NAME:-vllmkvcal}
 
@@ -88,9 +93,9 @@ BACKOFF_STEPS=${BACKOFF_STEPS:-1}
 LOCAL_TABLE=${KV_TABLE_LOCAL:-${XDG_CACHE_HOME:-$HOME/.cache}/radiance-mxfp4/kv-profiles.local.tsv}
 
 say "hardware:  $RAD_GPU_COUNT x $RAD_GPU_NAME ($RAD_GPU_MIB MiB), tp=$RAD_TP, sig=$RAD_GPU_SIG"
-say "shape:     maxseqs=$MAXSEQS chunk=$CHUNK maxlen=$MAXLEN spec=$SPEC_METHOD util=$GPU_UTIL"
+say "shape:     maxseqs=$MAXSEQS chunk=$CHUNK maxlen=$MAXLEN spec=$KV_KEY_SPEC util=$GPU_UTIL"
 say "table:     $LOCAL_TABLE"
-existing=$(rad_kv_lookup "$RAD_GPU_SIG" "$MAXSEQS" "$CHUNK" "$MAXLEN" "$SPEC_METHOD")
+existing=$(rad_kv_lookup "$RAD_GPU_SIG" "$MAXSEQS" "$CHUNK" "$MAXLEN" "$KV_KEY_SPEC")
 if [ -n "$existing" ]; then
   say "note:      a pin already resolves for this key ($existing bytes). The measurement below"
   say "           is written to the local table, which is read last, so it shadows that row"
@@ -240,9 +245,9 @@ fi
 # Drop any previous row for this key before appending, so the table does not grow a history that
 # rad_kv_lookup would then resolve by "last one wins" rather than by "most recent measurement".
 tmp=$(mktemp)
-awk -F'\t' -v s="$RAD_GPU_SIG" -v q="$MAXSEQS" -v c="$CHUNK" -v l="$MAXLEN" -v m="$SPEC_METHOD" \
+awk -F'\t' -v s="$RAD_GPU_SIG" -v q="$MAXSEQS" -v c="$CHUNK" -v l="$MAXLEN" -v m="$KV_KEY_SPEC" \
   '$1 ~ /^#/ || !($1==s && $2==q && $3==c && $4==l && $5==m)' "$LOCAL_TABLE" > "$tmp"
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$RAD_GPU_SIG" "$MAXSEQS" "$CHUNK" "$MAXLEN" "$SPEC_METHOD" \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$RAD_GPU_SIG" "$MAXSEQS" "$CHUNK" "$MAXLEN" "$KV_KEY_SPEC" \
   "$best" "measured $(date +%Y-%m-%d) by calibrate-kv.sh; ${best_toks} KV tokens, +${gain}% over profiled" >> "$tmp"
 mv "$tmp" "$LOCAL_TABLE"
 
