@@ -47,6 +47,12 @@ it. 150K and 180K ran only with the flag on (63.90 s / 81.46 s), having no count
 Compare ms/step, never tok/s: split-K reductions leave the engine non-deterministic run to run, so
 the two arms diverge in generated text and one 10K row read 99.0 vs 115.3 tok/s purely on draft
 acceptance (38.4% vs 46.7%) at an identical 37.0 ms/step; the rerun read 115.4.
+
+At TP=2 each rank moves its own vocab shard (1.18 GiB); measured 2026-10-06 on 2x R9700, PCIe Gen5
+x8 each, MAXSEQS 8, CHUNK 8192, GPU_UTIL 0.90: weights 10.39 -> 9.18 GiB per rank, KV pool 754,864
+-> 839,958 tokens (2.88x -> 3.20x concurrency at 262144); bit-exact readback 15.9-20.8 GB/s; decode
+ms/step identical at 1K-243K (22.7 ... 30.2), prefill ~1% slower, the same direction at every depth
+(e.g. 27.66 -> 27.90 s at 119K).
 """
 import os
 import sys
@@ -159,7 +165,11 @@ def maybe_offload(model, vllm_config, model_config) -> None:
     try:
         t0 = time.perf_counter()
         torch.cuda.synchronize(dev)
-        free_before = torch.cuda.mem_get_info(dev)[0]
+        # Tensor-held bytes, which is what vLLM's DeviceMemoryProfiler reads. Device-level free
+        # memory (mem_get_info) is the wrong measure: the caching allocator may keep the released
+        # block in its own pool, still available to the KV cache but invisible to the device --
+        # at TP=2 it read -0.10 GiB while the model load fell by 1.21 GiB per rank.
+        held_before = torch.cuda.memory_allocated(dev)
         # Pageable on purpose -- see HOW in the module docstring: the view pins an exact-size copy.
         view = to_view(w.to("cpu"))
         if view.device != dev or view.shape != w.shape or view.dtype != w.dtype:
@@ -196,9 +206,9 @@ def maybe_offload(model, vllm_config, model_config) -> None:
     del view
     torch.cuda.synchronize(dev)
     torch.cuda.empty_cache()
-    freed = torch.cuda.mem_get_info(dev)[0] - free_before
+    freed = held_before - torch.cuda.memory_allocated(dev)
 
     _offloaded.add(id(model))
     _say(f"{tuple(w.shape)} {str(w.dtype).replace('torch.', '')} ({_gib(nbytes)}) moved to pinned "
-         f"host memory, VRAM freed {_gib(freed)}; bit-exact readback over PCIe "
+         f"host memory, freed {_gib(freed)} of tensor memory; bit-exact readback over PCIe "
          f"{nbytes / t_check / 1e9:.1f} GB/s{bench}; {time.perf_counter() - t0:.1f} s")
