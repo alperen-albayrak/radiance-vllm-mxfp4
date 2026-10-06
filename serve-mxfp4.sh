@@ -438,13 +438,25 @@ KV_MEM=${KV_MEM:-auto}
 # check further down prints the command if it is missing). SPEC_METHOD=mtp needs no drafter at all
 # and is the fallback if you do not want the second checkpoint.
 SPEC_METHOD=${SPEC_METHOD:-dflash}
+# dspark: the DSpark drafter (DFlash + a Markov head over intra-block dependencies + a confidence
+# head), e.g. RedHatAI/Qwen3.8-27B-speculator.dspark. Needs an IMAGE built on vLLM >= 0.28: the
+# confidence head and the speculators-format loader arrived there, and the stock 0.9.3 image (vLLM
+# 0.27.1) has neither. Nothing here can check the image's vLLM version, so that is on the caller.
+case "$SPEC_METHOD" in
+  dflash|mtp|dspark) ;;
+  *) echo "SPEC_METHOD must be dflash, mtp or dspark (got '$SPEC_METHOD')" >&2; exit 1 ;;
+esac
 # TP / GPU_IDS are resolved above the cache-suffix block (the TP=3 padding keys on them).
 # MODELS is bind-mounted at /models below, so SNAP and DRAFTER must live somewhere under it.
 # Resolved HERE rather than next to SNAP further down: DRAFTER's default dereferences it, and under
 # `set -u` that made an un-exported MODELS an "unbound variable" abort rather than a default.
 MODELS="$(realpath -m "${MODELS:-$HOME/models}")"
 # Drafter checkpoint for SPEC_METHOD=dflash. Must live under MODELS -- only MODELS is mounted.
-DRAFTER=${DRAFTER:-$MODELS/Qwen3.8-27B-DFlash2-FP8}
+if [ "$SPEC_METHOD" = dspark ]; then
+  DRAFTER=${DRAFTER:-$MODELS/Qwen3.8-27B-speculator.dspark}
+else
+  DRAFTER=${DRAFTER:-$MODELS/Qwen3.8-27B-DFlash2-FP8}
+fi
 # The drafter's own attention backend. It has to support FULL cuda graphs or vLLM logs "running the
 # draft eagerly" and the single-pass draft loses its graph -- which is the entire point of dflash.
 # TRITON_ATTN does; R4D is the target's backend and is what mtp uses for the drafter too.
@@ -471,7 +483,7 @@ DRAFT_ATTN=${DRAFT_ATTN:-TRITON_ATTN}
 #   (184.7 vs 184.3) with code tok/update intact, and conc-8 recovers static SPEC=5's batch
 #   efficiency (steps 52-57 -> 46-47 ms, aggregate 391-413 -> 444-461 t/s). Lossless by
 #   construction -- verification preserves the distribution at any proposal length.
-if [ "$SPEC_METHOD" = dflash ]; then SPEC=${SPEC:-7}; else SPEC=${SPEC:-4}; fi
+case "$SPEC_METHOD" in dflash|dspark) SPEC=${SPEC:-7} ;; *) SPEC=${SPEC:-4} ;; esac
 # The tuned drafter stack. The right default is NOT the same for both methods:
 #   mtp    -- 1. The 2-bit draft head with an exact rerank is a straight win here (+6.5% decode).
 #   dflash -- 1 as of 2026-08-27, WITH RERANK=64 (below). It used to be 0: FAST_DRAFT=1 crashed
@@ -814,10 +826,10 @@ if [ "$ASYNC" = 1 ]; then ASYNC_FLAG="--async-scheduling"; UNPAD=false; else ASY
 
 # Speculative config, built here so the drafter path is validated before podman is invoked rather
 # than surfacing as an HF repo-id error inside the worker.
-if [ "$SPEC_METHOD" = dflash ]; then
+if [ "$SPEC_METHOD" = dflash ] || [ "$SPEC_METHOD" = dspark ]; then
   DRAFTER="$(realpath -m "$DRAFTER")"
   if [ ! -f "$DRAFTER/config.json" ]; then
-    echo "no dflash drafter at $DRAFTER" >&2
+    echo "no $SPEC_METHOD drafter at $DRAFTER" >&2
     echo >&2
     echo "Fetch it (2 GiB), or let ./setup-mxfp4.sh do it:" >&2
     echo "  hf download tcclaviger/Qwen3.8-27B-DFlash2-FP8 --local-dir $DRAFTER" >&2
@@ -839,7 +851,13 @@ if [ "$SPEC_METHOD" = dflash ]; then
   # draft-logits head (bypasses the int2 argmax fast path) until the sparse draft_logits_spec
   # integration exists -- measure acceptance vs that cost before defaulting.
   DRAFT_SAMPLE=${DRAFT_SAMPLE:-greedy}
-  SPEC_CFG="{\"method\":\"dflash\",\"model\":\"$CDRAFTER\",\"num_speculative_tokens\":$SPEC,\"attention_backend\":\"$DRAFT_ATTN\",\"disable_padded_drafter_batch\":$UNPAD,\"draft_sample_method\":\"$DRAFT_SAMPLE\"}"
+  if [ "$SPEC_METHOD" = dspark ]; then
+    # vLLM's DSpark speculator samples its own block (greedy per the checkpoint's proposal
+    # method), so draft_sample_method -- a DFlash2 selector knob -- is not passed.
+    SPEC_CFG="{\"method\":\"dspark\",\"model\":\"$CDRAFTER\",\"num_speculative_tokens\":$SPEC,\"attention_backend\":\"$DRAFT_ATTN\",\"disable_padded_drafter_batch\":$UNPAD}"
+  else
+    SPEC_CFG="{\"method\":\"dflash\",\"model\":\"$CDRAFTER\",\"num_speculative_tokens\":$SPEC,\"attention_backend\":\"$DRAFT_ATTN\",\"disable_padded_drafter_batch\":$UNPAD,\"draft_sample_method\":\"$DRAFT_SAMPLE\"}"
+  fi
 else
   SPEC_CFG="{\"method\":\"mtp\",\"num_speculative_tokens\":$SPEC,\"attention_backend\":\"$ATTN\",\"disable_padded_drafter_batch\":$UNPAD}"
 fi
