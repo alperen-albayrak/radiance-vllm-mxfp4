@@ -60,7 +60,7 @@ Conflict resolution done while integrating:
 2. **MXFP8 GEMMs use `tl.dot_scaled`** (`amd/ops/triton_bmm.py`, gfx950 scaled MFMA). RDNA4 has
    FP8 (OCP e4m3) WMMA but no scaled MMA: split K into 32-wide blocks and apply the E8M0 scale
    products to the partial accumulators, or reuse radiance's fp8-WMMA kernels
-   (`launch6_*`, `radiance_gemm.py`). Tile/stage choices assume gfx950's 160 KB LDS
+   (`launch6_*` in `radiance_mxfp4.py` / `radiance_mxfp4_fp8.hip`). Tile/stage choices assume gfx950's 160 KB LDS
    (`amd/ops/linear.py`); gfx1201 allows 64 KB of LDS per workgroup and runs wave32 — every `num_warps`/`num_stages`
    needs retuning.
 3. **NVFP4 experts.** The ROCm PR only runs the all-MXFP8 Small checkpoint. Mini ships NVFP4
