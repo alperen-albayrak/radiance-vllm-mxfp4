@@ -87,6 +87,31 @@ the HIP backend segfaults in `hipMemsetAsync` with the host's ROCm 10.1): Unslot
 Rust task, a tool call, a diagram read through mmproj). Speed: **24 tok/s (Q8), 26 tok/s (Q4)**
 single stream — the reason for this port.
 
+## Probe: upstream ROCm ops on gfx1201 (2026-11-21)
+
+`inkling2/tests/probe_amd_ops.py`, run inside `stilldeadcode/vllm-radiance:0.9.3` (torch
+2.11.0+rocm7.14, triton 3.6.0) on one R9700, ops loaded straight from the integration tree:
+
+| op (unchanged gfx950 code) | result vs torch fp32 |
+|---|---|
+| `norm.rms_norm` | ok, max rel err 3.3e-03 (bf16 rounding) |
+| `linear.linear_k_groups` | ok, 2.4e-03 |
+| `attn_res.attn_res` | runs, finite |
+| `mxfp8.mxfp8_quantize` | runs |
+| `triton_bmm.bmm` (**`tl.dot_scaled`**, the MXFP8 expert GEMM) | **ok, 2.5e-03** |
+
+So Triton lowers `tl.dot_scaled` on gfx1201 too (without scaled MFMA it decomposes it): the
+MXFP8 expert path is **correct on RDNA4 as written**; only its speed is unknown. All eleven op
+modules import except `sconv` (it imports `vllm.models.inkling2`, absent from the image's vLLM
+0.27.1). Consequences:
+
+- Gap 5 ("MXFP8 layers need a new kernel") is a speed item, not a correctness one.
+- The simplest correct GPU path for the NVFP4 layers is **NVFP4 → MXFP8 at load** onto this same
+  GEMM (near-lossless: 8-bit values, e8m0 per 32). Cost: experts grow to ~20 GB (1 byte/param),
+  ~28 GB with the rest — too tight for one 32 GB card with KV caches, fine with the experts split
+  over both cards (`ep_size` exists in `amd/moe.py`). That is M3; MXFP4 (decision below) is M4
+  and brings it back to one card.
+
 ## Decisions (owner, 2026-11-21)
 
 - Do not wait for upstream: we carry #69028 + #67685 ourselves (done, M0).
