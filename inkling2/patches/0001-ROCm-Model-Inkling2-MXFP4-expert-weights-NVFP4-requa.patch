@@ -1,0 +1,281 @@
+From a23a0548c521744801dd0b182def663e1fde2f57 Mon Sep 17 00:00:00 2001
+From: Alperen Albayrak <69551448+alperen-albayrak@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 11:19:11 +0300
+Subject: [PATCH 1/2] [ROCm][Model] Inkling2: MXFP4 expert weights (NVFP4
+ requantization) and MXFP4-weight expert GEMM
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ tests/models/inkling2/test_rdna4_mxfp4.py  |  64 ++++++++++++
+ vllm/models/inkling2/amd/ops/mxfp4.py      | 110 +++++++++++++++++++++
+ vllm/models/inkling2/amd/ops/triton_bmm.py |  30 ++++--
+ 3 files changed, 197 insertions(+), 7 deletions(-)
+ create mode 100644 tests/models/inkling2/test_rdna4_mxfp4.py
+ create mode 100644 vllm/models/inkling2/amd/ops/mxfp4.py
+
+diff --git a/tests/models/inkling2/test_rdna4_mxfp4.py b/tests/models/inkling2/test_rdna4_mxfp4.py
+new file mode 100644
+index 0000000000..a6028f96f9
+--- /dev/null
++++ b/tests/models/inkling2/test_rdna4_mxfp4.py
+@@ -0,0 +1,64 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""MXFP4 expert weights on ROCm: requantization from NVFP4 and the GEMM."""
++
++import pytest
++import torch
++
++from vllm.models.inkling2.amd.ops import mxfp4
++
++DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
++
++
++def test_e2m1_codes_round_trip():
++    lut = mxfp4.e2m1_lut(torch.device("cpu"))
++    codes = mxfp4._quantize_e2m1(lut.clone())
++    # -0.0 keeps its sign bit; every value maps back to itself.
++    assert torch.equal(lut[codes.long()], lut)
++
++
++def test_quantize_mxfp4_exact_on_representable():
++    torch.manual_seed(0)
++    codes = torch.randint(0, 16, (4, 64, 128), dtype=torch.uint8)
++    exponents = torch.randint(110, 130, (4, 64, 4), dtype=torch.uint8)
++    packed = (codes[..., 0::2] | (codes[..., 1::2] << 4)).contiguous()
++    w = mxfp4.dequantize_mxfp4(packed, exponents)
++    packed2, exponents2 = mxfp4.quantize_mxfp4(w)
++    torch.testing.assert_close(mxfp4.dequantize_mxfp4(packed2, exponents2), w, rtol=0, atol=0)
++
++
++def _random_nvfp4(experts, n, k, device):
++    packed = torch.randint(0, 256, (experts, n, k // 2), dtype=torch.uint8, device=device)
++    scale = (torch.rand(experts, n, k // 16, device=device) * 3 + 0.5).to(torch.float8_e4m3fn)
++    outer = torch.rand(experts, device=device) * 0.01 + 0.001
++    return packed, scale, outer
++
++
++def test_requantize_nvfp4_error_is_small():
++    torch.manual_seed(0)
++    packed, scale, outer = _random_nvfp4(3, 64, 256, DEVICE)
++    out, exponents, err = mxfp4.requantize_nvfp4(packed, scale, outer)
++    assert out.shape == packed.shape and exponents.shape == (3, 64, 8)
++    # Uniform random codes are the worst case for a coarser grid.
++    assert err < 0.2
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
++@pytest.mark.parametrize("n,k", [(2304, 2304), (2304, 1152)])
++def test_mxfp4_bmm_matches_reference(n, k):
++    from vllm.models.inkling2.amd.ops import triton_bmm
++
++    torch.manual_seed(0)
++    experts = 8
++    plan = triton_bmm.ExpertPlan(tile=16, max_ctas=2)
++    act = (torch.randn(plan.rows, k, device=DEVICE) * 0.5).to(torch.float8_e4m3fn)
++    # Unit activation scales: their tile layout is covered by the MXFP8 tests.
++    act_scale = torch.full((plan.rows * (k // 32) + 4096,), 127, dtype=torch.uint8, device=DEVICE)
++    w = torch.randn(experts, n, k, device=DEVICE) * 0.02
++    packed, exponents = mxfp4.quantize_mxfp4(w)
++    tiles = torch.tensor([3, 5, 16, 28, 2, 0, 0], dtype=torch.int32, device=DEVICE)
++    out = triton_bmm.bmm(act, act_scale, packed, exponents, tiles, plan)
++    wq = mxfp4.dequantize_mxfp4(packed, exponents)
++    for rows, expert in ((slice(0, 16), 3), (slice(16, 28), 5)):
++        ref = act[rows].float() @ wq[expert].t()
++        torch.testing.assert_close(out[rows].float(), ref, rtol=2e-2, atol=ref.abs().max().item() * 5e-3)
+diff --git a/vllm/models/inkling2/amd/ops/mxfp4.py b/vllm/models/inkling2/amd/ops/mxfp4.py
+new file mode 100644
+index 0000000000..a891f6d30b
+--- /dev/null
++++ b/vllm/models/inkling2/amd/ops/mxfp4.py
+@@ -0,0 +1,110 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""MXFP4 expert weights (OCP e2m1 values, two per byte, low nibble first; ue8m0
++scales per 32 elements) from the checkpoint's NVFP4 ones.
++
++NVFP4 stores `w = e2m1 * scale * (amax / denominator)`: an e4m3 `scale` per
++16 elements and one `amax` per expert. The RDNA4 GEMMs take power-of-two
++block scales, so the weights are dequantized and requantized once, after
++loading. The step is lossy (32-wide power-of-two blocks are coarser than
++16-wide e4m3 ones); `requantize_nvfp4` returns the relative error it made.
++"""
++
++import torch
++
++E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
++E8M0_BIAS = 127
++
++
++def e2m1_lut(device: torch.device) -> torch.Tensor:
++    """fp32 values of the 16 e2m1 codes (bit 3 is the sign)."""
++    positive = torch.tensor(E2M1_VALUES, dtype=torch.float32, device=device)
++    return torch.cat((positive, -positive))
++
++
++def unpack_e2m1(packed: torch.Tensor) -> torch.Tensor:
++    """uint8 `[..., K / 2]` -> fp32 `[..., K]` (low nibble = even index)."""
++    codes = torch.stack((packed & 0xF, packed >> 4), dim=-1).flatten(-2)
++    return e2m1_lut(packed.device)[codes.long()]
++
++
++def dequantize_nvfp4(
++    packed: torch.Tensor, scale: torch.Tensor, outer_scale: torch.Tensor
++) -> torch.Tensor:
++    """fp32 `[E, N, K]` weights of NVFP4 `packed` `[E, N, K / 2]`, e4m3
++    `scale` `[E, N, K / 16]` and fp32 `outer_scale` `[E]`."""
++    values = unpack_e2m1(packed)
++    block = scale.float().repeat_interleave(16, dim=-1)
++    return values * block * outer_scale.view(-1, 1, 1)
++
++
++def _quantize_e2m1(x: torch.Tensor) -> torch.Tensor:
++    """Round fp32 `x` (already divided by its block scale) to the nearest
++    e2m1 value, ties to even mantissa; returns the 4-bit codes (uint8)."""
++    magnitude = x.abs().clamp_(max=6.0)
++    # Spacing is 0.5 up to 2, 1 up to 4, 2 up to 6.
++    step = torch.where(magnitude < 2.0, 0.5, torch.where(magnitude < 4.0, 1.0, 2.0))
++    rounded = torch.round(magnitude / step) * step
++    # Code = index of the value in E2M1_VALUES.
++    code = torch.where(
++        rounded <= 2.0,
++        rounded * 2.0,
++        torch.where(rounded <= 4.0, rounded + 2.0, rounded * 0.5 + 4.0),
++    ).to(torch.uint8)
++    return code | (torch.signbit(x).to(torch.uint8) << 3)
++
++
++def quantize_mxfp4(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
++    """fp32 `[..., K]` (K a multiple of 32) -> packed e2m1 uint8
++    `[..., K / 2]` and ue8m0 exponents uint8 `[..., K / 32]`.
++
++    Per block the exponent is the one of `ceil(log2(amax / 6))` (no value
++    clips) and the one below it (the top of the block clips, the rest gains a
++    bit) with the smaller squared error."""
++    shape = w.shape
++    blocks = w.reshape(*shape[:-1], shape[-1] // 32, 32)
++    amax = blocks.abs().amax(dim=-1, keepdim=True)
++    noclip = torch.ceil(torch.log2(amax.clamp_min(2.0**-120) / 6.0))
++    best_codes = best_err = best_exp = None
++    for exponent in (noclip, noclip - 1.0):
++        exponent = exponent.clamp(-E8M0_BIAS, E8M0_BIAS)
++        scale = torch.exp2(exponent)
++        codes = _quantize_e2m1(blocks / scale)
++        err = (e2m1_lut(w.device)[codes.long()] * scale - blocks).square().sum(-1, True)
++        if best_err is None:
++            best_codes, best_err, best_exp = codes, err, exponent
++        else:
++            better = err < best_err
++            best_codes = torch.where(better, codes, best_codes)
++            best_exp = torch.where(better, exponent, best_exp)
++    assert best_codes is not None and best_exp is not None
++    codes = best_codes.reshape(*shape[:-1], shape[-1] // 2, 2)
++    packed = codes[..., 0] | (codes[..., 1] << 4)
++    exponents = (best_exp.squeeze(-1) + E8M0_BIAS).to(torch.uint8)
++    return packed.contiguous(), exponents.contiguous()
++
++
++def dequantize_mxfp4(packed: torch.Tensor, exponents: torch.Tensor) -> torch.Tensor:
++    """fp32 `[..., K]` of packed e2m1 `[..., K / 2]` and ue8m0 exponents
++    `[..., K / 32]` (the reference of the GEMM)."""
++    scale = torch.exp2(exponents.float() - E8M0_BIAS).repeat_interleave(32, dim=-1)
++    return unpack_e2m1(packed) * scale
++
++
++def requantize_nvfp4(
++    packed: torch.Tensor, scale: torch.Tensor, outer_scale: torch.Tensor
++) -> tuple[torch.Tensor, torch.Tensor, float]:
++    """NVFP4 expert weights -> MXFP4 `(packed, exponents)` and the relative
++    Frobenius error of the requantization, one expert at a time."""
++    out_packed = torch.empty_like(packed)
++    exponents = torch.empty(
++        (*packed.shape[:-1], packed.shape[-1] // 16), dtype=torch.uint8, device=packed.device
++    )
++    err = norm = 0.0
++    for e in range(packed.shape[0]):
++        w = dequantize_nvfp4(packed[e : e + 1], scale[e : e + 1], outer_scale[e : e + 1])
++        out_packed[e : e + 1], exponents[e : e + 1] = quantize_mxfp4(w)
++        back = dequantize_mxfp4(out_packed[e : e + 1], exponents[e : e + 1])
++        err += (back - w).square().sum().item()
++        norm += w.square().sum().item()
++    return out_packed, exponents, (err / max(norm, 1e-30)) ** 0.5
+diff --git a/vllm/models/inkling2/amd/ops/triton_bmm.py b/vllm/models/inkling2/amd/ops/triton_bmm.py
+index 77d21d60f3..9dc2595076 100644
+--- a/vllm/models/inkling2/amd/ops/triton_bmm.py
++++ b/vllm/models/inkling2/amd/ops/triton_bmm.py
+@@ -1,7 +1,8 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+-"""Triton MXFP8 batched expert GEMMs (`tl.dot_scaled`: gfx950's scaled MFMA)
+-for the Inkling2 MoE.
++"""Triton batched expert GEMMs (`tl.dot_scaled`: gfx950's scaled MFMA; lowered
++to plain dots where the target has none) for the Inkling2 MoE: MXFP8
++activations with MXFP8 or MXFP4 (`ops.mxfp4`) expert weights.
+ 
+ The GEMMs read expert-sorted activation rows whose expert segments are padded
+ to the token tile, with block scales in the R8c4 (tile < 128) or R128c4 layout
+@@ -64,6 +65,7 @@ def _mxfp8_bmm_kernel(
+     BM: tl.constexpr,
+     BN: tl.constexpr,
+     BK: tl.constexpr,
++    W_E2M1: tl.constexpr,
+ ):
+     # Program (n, m) computes BM rows of token tile m // SUB: a part of it, or
+     # (for tiles below BM rows) the whole tile. Only routed rows are read and
+@@ -84,7 +86,10 @@ def _mxfp8_bmm_kernel(
+     ks = tl.arange(0, BK)
+     groups = tl.arange(0, BK // 32)
+     a_ptrs = A + rows[:, None].to(tl.int64) * K + ks[None, :]
+-    w_ptrs = W + (expert * N + cols[:, None]) * K + ks[None, :]
++    # MXFP4 weights pack two e2m1 values per byte along K.
++    WK: tl.constexpr = K // 2 if W_E2M1 else K
++    WBK: tl.constexpr = BK // 2 if W_E2M1 else BK
++    w_ptrs = W + (expert * N + cols[:, None]) * WK + tl.arange(0, WBK)[None, :]
+     ws_ptrs = WScale + (expert * N + cols[:, None]) * (K // 32) + groups[None, :]
+     acc = tl.zeros((BM, BN), tl.float32)
+     for k in range(0, K, BK):
+@@ -92,9 +97,13 @@ def _mxfp8_bmm_kernel(
+         a_scale_ptrs = AScale + _scale_offsets(rows[:, None], scale_cols, K // 32, TILE)
+         a = tl.load(a_ptrs + k, row_mask, other=0.0)
+         a_scale = tl.load(a_scale_ptrs, row_mask, other=0)
+-        w = tl.load(w_ptrs + k)
+         w_scale = tl.load(ws_ptrs + k // 32)
+-        acc = tl.dot_scaled(a, a_scale, "e4m3", tl.trans(w), w_scale, "e4m3", acc)
++        if W_E2M1:
++            w = tl.load(w_ptrs + k // 2)
++            acc = tl.dot_scaled(a, a_scale, "e4m3", tl.trans(w), w_scale, "e2m1", acc)
++        else:
++            w = tl.load(w_ptrs + k)
++            acc = tl.dot_scaled(a, a_scale, "e4m3", tl.trans(w), w_scale, "e4m3", acc)
+     out_ptrs = Out + rows[:, None].to(tl.int64) * N + cols[None, :]
+     tl.store(out_ptrs, acc.to(tl.bfloat16), row_mask)
+ 
+@@ -110,9 +119,15 @@ def bmm(
+     """bf16 `[plan.rows, N]` expert GEMM of the tile-padded MXFP8 `act` rows
+     with their swizzled block scales `act_scale`, by each tile's expert
+     (`tiles`: the `moe.route` metadata). Rows past each tile's routed rows
+-    are left uninitialized."""
++    are left uninitialized. `weight` is MXFP8 (e4m3 `[E, N, K]`) or MXFP4
++    (uint8 `[E, N, K / 2]`, two e2m1 values per byte)."""
++    w_e2m1 = weight.dtype == torch.uint8
+     num_experts, n, k = weight.shape
+-    assert act.shape == (plan.rows, k) and weight.dtype == torch.float8_e4m3fn
++    if w_e2m1:
++        k *= 2
++    else:
++        assert weight.dtype == torch.float8_e4m3fn
++    assert act.shape == (plan.rows, k)
+     assert weight_scale.shape == (num_experts, n, k // 32)
+     assert weight.is_contiguous() and weight_scale.is_contiguous()
+     out = torch.empty((plan.rows, n), dtype=torch.bfloat16, device=act.device)
+@@ -136,6 +151,7 @@ def bmm(
+         BM=bm,
+         BN=bn,
+         BK=bk,
++        W_E2M1=w_e2m1,
+         num_warps=8 if bm == 128 and bk == 256 else 4,
+         num_stages=2,
+     )
+-- 
+2.56.1
+

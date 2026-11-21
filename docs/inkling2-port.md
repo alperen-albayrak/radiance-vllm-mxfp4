@@ -1,6 +1,6 @@
 # Inkling 2 Mini on R9700 (gfx1201) — port plan
 
-Status: **M0 + M1 done 2026-11-21** (integration branch built; plan reviewed against the code the same day). Nothing runs on gfx1201 yet.
+Status: **runs on one R9700 with MXFP4 experts (2026-11-21)** — M0–M4 functional; speed tuning (M5) and serving integration (M6) open.
 Owner: this fork. Decision: we do **not** wait for upstream vLLM to merge the Inkling 2 Mini
 and ROCm PRs — we carry them ourselves and port to RDNA4.
 
@@ -53,6 +53,63 @@ Conflict resolution done while integrating:
 - `tests/models/inkling2/*`: kept main's (NVIDIA) versions; RDNA4 tests are written fresh (M2).
 - Static check: every relative import in `amd/` resolves and every name it takes from the shared
   modules (`configs`, `processing`, `speculator_config`) still exists on main.
+
+## Result (2026-11-21)
+
+Inkling 2 Mini serves from vLLM on a single R9700 (gfx1201), experts in **MXFP4**, the loop
+ported to the ROCm (`amd/`) model.
+
+**How it is built.** Upstream ROCm nightly `vllm/vllm-openai-rocm:nightly-f8b29fab…` (vLLM main
+@ `f8b29fab4`, torch 2.13.0+rocm10.0.0, triton 3.8.0 — it runs on gfx1201 as shipped) with our
+tree's Python files bind-mounted over the installed package (`inkling2/dev/run.sh`,
+`inkling2/dev/serve.sh`); nothing is compiled. The tree is vLLM `f8b29fab4` + merge of #69028 +
+the ROCm commit of #67685 + our two commits (`inkling2/patches/`; whole diff:
+`inkling2/vllm-f8b29fab-inkling2-rdna4.diff`).
+
+**What we changed (all under `vllm/models/inkling2/amd/` unless noted).**
+
+| | |
+|---|---|
+| `ops/mxfp4.py` (new) | NVFP4 → fp32 → MXFP4 (e2m1 two per byte, ue8m0 per 32; per block the better of the no-clip exponent and the one below, by squared error); reference dequantizers |
+| `ops/triton_bmm.py` | the expert GEMM takes MXFP4 weights too (`tl.dot_scaled(..., "e2m1")`), MXFP8 activations as before (W4A8); on RDNA4 128-wide K tiles, one stage (64 KB LDS) |
+| `moe.py` | per-layer expert format; NVFP4 tensors (codes, e4m3 scales, per-expert amax, denominator) loaded as stored, requantized in `process_weights_after_loading`, relative error logged |
+| `attention.py`, `sconv.py` | per-pass KV caches (`Inkling2AttentionPassCache`) and conv states; local layers accept separate q/k/v inputs; KV cache API of current main (`get_kv_cache_config`) |
+| `ops/attn_res.py` | optional output norm (raw fp32 mixes for the loop's blends) |
+| `ops/loop.py` (new), `loop.py` (new) | message controllers (Triton, from the NVIDIA ops) and `Inkling2LoopModel`: prelude → 3 core passes → coda, unfused |
+| `model.py` | passes per decoder layer, expert format from the quant config, gate widened to RDNA4, loop model selection |
+| `ops/moe.py`, `ops/activation.py` | column blocks no longer assume Small's widths (hidden 2304, intermediate 1152) |
+| `quant_config.py` | removed: the shared `inkling2/quant_config.py` is used |
+| `inkling2/__init__.py` | lazy exports resolve to `nvidia/` or `amd/` by platform |
+
+**Checks.**
+
+- `tests/models/inkling2/test_rdna4_mxfp4.py`: 5 passed on gfx1201 (e2m1 round trip, exact
+  requantization of representable weights, error bound, MXFP4 GEMM vs fp32 reference for both
+  expert shapes).
+- NVFP4 dequantization equals the HF reference's bf16 experts (max rel. diff 2.3e-3 = bf16
+  rounding; `w13` rows are interleaved gate/up as `ops/activation.py` expects).
+- NVFP4 → MXFP4 relative Frobenius error on the real weights: **0.110 (w13), 0.112 (w2)** in
+  every layer. This is the price of the decision for MXFP4; it is of the same size as a 4-bit
+  quantization itself.
+- Against the M1 reference (`inkling2/compare_ref.py`, greedy, token ids as prompt): the first
+  token agrees on all 6 prompts, the greedy continuations agree for the first 24–64 tokens
+  (one prompt all 64), 248/384 positions overall. Divergence starts late and stays on topic —
+  what quantization noise does (MXFP4 weights + MXFP8 activations vs the reference's bf16); a
+  wrong loop or cache would diverge at once. The 2227-token prompt (beyond the 1024 window,
+  per-pass caches) behaves the same.
+- Speed, single stream, FULL CUDA graphs, untuned: **29.9 tok/s** (600 tokens, twice). Model
+  memory 18.1 GiB.
+
+**Open.**
+
+1. Quality gate: GSM8K (radiance's gate) and perplexity against the reference — the 11 %
+   weight error must be shown harmless on a benchmark, not on six prompts.
+2. Speed (M5): the GEMM goes through Triton's `dot_scaled` lowering with small tiles; the mixes
+   and short convs are unfused; no speculative decoding. Candidates: radiance's W4A8 fp8-WMMA
+   kernel for the expert GEMM, tile tuning, conv_mix fusion, DSpark.
+3. TP=2, vision tower, tool/reasoning parsers under load: not tested yet.
+4. Layers 20–23 stay MXFP8 (as shipped); requantizing them to MXFP4 would save ~2 GB.
+5. Upstreaming: the branch is local (`rdna4`); patches here.
 
 ## Review of the first draft (2026-11-21, after reading the code)
 
