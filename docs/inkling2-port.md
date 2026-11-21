@@ -1,6 +1,6 @@
 # Inkling 2 Mini on R9700 (gfx1201) — port plan
 
-Status: **M0 done 2026-11-21** (integration branch built; plan reviewed against the code the same day). Nothing runs on gfx1201 yet.
+Status: **M0 + M1 done 2026-11-21** (integration branch built; plan reviewed against the code the same day). Nothing runs on gfx1201 yet.
 Owner: this fork. Decision: we do **not** wait for upstream vLLM to merge the Inkling 2 Mini
 and ROCm PRs — we carry them ourselves and port to RDNA4.
 
@@ -79,6 +79,14 @@ What the first version of this plan got wrong or missed:
 7. Memory: experts ≈ 10.2 GB (NVFP4) + 4.1 GB (MXFP8 + scales), BF16 ≈ 3.9 GB → the model fits one
    32 GB R9700 with room for the KV caches of 12 core layers × 3 passes. **TP=1 first.**
 
+## llama.cpp trial (2026-11-21)
+
+Before porting, the model was tried through llama.cpp (master + #32704, Vulkan/RADV on one R9700;
+the HIP backend segfaults in `hipMemsetAsync` with the host's ROCm 10.1): Unsloth
+`Mainline_Support` Q8_K_XL and Q4_K_XL. Small smoke tests passed (Turkish, reasoning, a compiling
+Rust task, a tool call, a diagram read through mmproj). Speed: **24 tok/s (Q8), 26 tok/s (Q4)**
+single stream — the reason for this port.
+
 ## Decisions (owner, 2026-11-21)
 
 - Do not wait for upstream: we carry #69028 + #67685 ourselves (done, M0).
@@ -120,7 +128,7 @@ What the first version of this plan got wrong or missed:
 | | Goal | Done when |
 |---|---|---|
 | M0 | Integration base + plan | ✅ 2026-11-21 |
-| M1 | **Reference.** transformers PR #51050 branch, CPU (~250 GB RAM, no GPU needed); fixed prompt set; dump logits + per-layer-visit hidden states; note whether activations are quantized | script + dumps committed (dumps outside git) |
+| M1 | **Reference.** ✅ 2026-11-21 — `inkling2/ref_dump.py` (transformers PR #51050 @ 6173a2f, torch 2.15 CPU, bf16) on 6 prompts (25–2227 tokens): outputs of all 48 layer visits (last 8 positions), final logits, 64 greedy tokens. Dumps (1.8 GB) kept outside the repository, summary `inkling2/ref-meta.json`. **The HF reference dequantizes the experts to bf16 and does not quantize activations** — so it is the "ideal weights-as-stored" reference; the NVIDIA serving path (NVFP4/MXFP8 activations) is a second, slightly different target | done |
 | M2 | **Loop on CPU in our tree.** `amd/loop.py` + passes, with torch fallbacks for the GEMMs (dequantized experts, no Triton): proves the control flow and weight loading | hidden states match M1 at every visit (bf16 tolerance) |
 | M3 | **gfx1201 kernels.** Track A image; gates widened; amd Triton ops (norm, sconv, attn_res, attention) pass their unit tests on gfx1201; experts via the simplest correct GPU path | greedy tokens match M1 on the prompt set |
 | M4 | **MXFP4 experts.** NVFP4→MXFP4 loader + grouped GEMM; layers 20–23 decided (scaled fp8 or MXFP4) | per-layer error logged; top-1 agreement and perplexity vs M1 reported; GSM8K gate like other radiance kernels |
