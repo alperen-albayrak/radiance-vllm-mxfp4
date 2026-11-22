@@ -1,0 +1,2 @@
+[vllm.general_plugins]
+radiance_v032 = radiance_v032_plugin:register

@@ -1,0 +1,4 @@
+Metadata-Version: 2.1
+Name: radiance-v032-plugin
+Version: 0.1.0
+Summary: Radiance (GGZ14/vllm-mxfp4) registrations for vLLM 0.32 (overlay, not pip-installed)
