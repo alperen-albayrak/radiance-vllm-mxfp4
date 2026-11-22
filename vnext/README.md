@@ -30,6 +30,20 @@ gives its container at TP=2, plus two lines that this vLLM/ROCm needs:
 | `HSA_ENABLE_IPC_MODE_LEGACY=0` | The image sets 1. Legacy GPU memory sharing needs the out-of-tree amdgpu driver; on a mainline kernel `hipIpcGetMemHandle` fails with "invalid argument", which breaks RCCL's direct transfers and radiance's all-reduce. With 0 the dmabuf path is used and both work. |
 | `VLLM_ROCM_USE_AITER_CUSTOM_AR=0` | vLLM now fuses the all-reduce into the following norm itself when aiter's custom all-reduce is on. Radiance's fp8 stream does the same job with its own kernels; the two cannot both own the partial sums. With 1 the stream declines (logged) and vLLM's scheme runs. |
 
+One line is easy to lose because it is not a `RADIANCE_*` or `VLLM_*` variable: `R4D_ATTN_FP8=3`.
+libr4d reads it itself; it selects the 8-bit QK and PV legs of the prefill attention. Without it the
+16-bit legs run and cold prefill is 11% slower at 128K tokens and 16% slower at 250K.
+
+### KV cache size
+
+`serve.sh` passes `--kv-cache-memory` (`KV_MEM`, default 15.4 GiB per card: what the production
+serve gets from `GPU_UTIL=0.90` on vLLM 0.27). Left to itself this vLLM sizes the cache from the
+memory it measures after warm-up and, on ROCm, keeps 3 GiB plus the activation peak free
+(`KV_CACHE_MARGIN_FLOOR_BYTES` in `vllm/v1/worker/extensible_kv_cache.py`): 13.2 GiB, 723K tokens
+instead of 846K. With 15.4 GiB the fuller card peaked at 31.4 of 32.6 GiB under eight 32K-token
+prefills and three 250K-token sessions. If a card also drives a display or something
+else takes VRAM there, lower `KV_MEM` or set `KV_MEM=` to get vLLM's own sizing back.
+
 ## What changed against v032
 
 Overlay files that needed more than a three-way merge:
@@ -77,6 +91,7 @@ Against a running server (`tests/`, plain Python, no dependencies):
 | `functest.py <url> <model>` | Tool call and tool result, image input, JSON schema output, streamed reasoning, thinking off. |
 | `specdec_compare.py <label> <model> <out.json> [url]` | Speed and acceptance length on 18 short prompts, greedy and sampled. |
 | `hitdelta.py <url> <model>` | Tokens prefilled again per turn of a growing conversation. |
+| `soak.py <url> <model> <minutes> [workers]` | Several clients send a random mix (record lookups over shared documents, growing conversations, tool calls, JSON schema, long streams with one in three aborted mid-stream) and every checkable reply is checked. |
 
 `tests/check_symbols.py` and `tests/selftest_overlay.py` are the static checks from v032.
 

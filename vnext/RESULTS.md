@@ -1,70 +1,118 @@
-# vnext measurements (2026-11-21/22)
+# vnext measurements (2026-11-22)
 
-Two R9700, TP=2, DaisyRose-27B MXFP4 (W4A8), DFlash2-FP8 drafter with 7 draft tokens, fp8 KV,
-262,144 context, 8 sequences, 8192-token chunks, GPU utilisation 0.90, embed-host on.
-"production" = `serve-mxfp4.sh` on `stilldeadcode/vllm-radiance:0.9.3` (vLLM 0.27.1, libr4d rx6).
-"vnext" = `vnext/serve.sh` on the image in `BASE` (libr4d rx9). One run each.
+Two R9700, TP=2, MXFP4 target (W4A8), DFlash2-FP8 drafter with 7 draft tokens, fp8 KV, 262,144
+context, 8 sequences, 8192-token chunks, embed-host on, fp32 state cache.
+"production" = `serve-mxfp4.sh` on `stilldeadcode/vllm-radiance:0.9.3` (vLLM 0.27.1, libr4d rx6,
+`GPU_UTIL=0.90`). "vnext" = `vnext/serve.sh` on the image in `BASE` (libr4d rx9, `R4D_ATTN_FP8=3`,
+`KV_MEM` 15.4 GiB). Values are production / vnext. One run each unless noted; two runs of the same
+setup differed by up to 4% on the short-prompt test, so smaller differences mean nothing.
+
+Targets: `abhinand/DaisyRose-27B-Quark-AWQ-MXFP4` and `amd/Qwen3.8-27B-Quark-AWQ-MXFP4` (MTP head
+rewritten to FP8 with `fp8_mtp.py`).
 
 ## Short prompts, one stream (`tests/specdec_compare.py`, 18 prompts x 512 tokens)
 
-| | tok/s T=0 | tok/s T=1 | acceptance T=0 | acceptance T=1 |
-|---|--:|--:|--:|--:|
-| production | 156.0 | 137.4 | 4.30 | 3.89 |
-| vnext | 158.8 | 143.6 | 4.28 | 4.01 |
-| vnext, DSpine-b16 drafter (fp16 state cache) | 122.3 | 109.8 | 4.96 | 4.58 |
+| target | serve | tok/s T=0 | tok/s T=1 | acceptance T=0 | acceptance T=1 |
+|---|---|--:|--:|--:|--:|
+| DaisyRose | production (2 runs) | 156.0, 155.5 | 137.4, 139.0 | 4.30, 4.30 | 3.89, 3.88 |
+| DaisyRose | vnext (3 runs) | 158.8, 151.9, 157.3 | 143.6, 137.5, 145.6 | 4.28, 4.18, 4.23 | 4.01, 3.85, 4.00 |
+| Qwen3.8 | vnext | 157.0 | 143.0 | 4.25 | 3.95 |
 
 ## Context length and parallel sessions (`bench_ctx.py`, 600 output tokens)
 
-Prefill: all sessions start together, prompts never seen before. Decode: the same prompts again,
-served from the prefix cache. Values are production / vnext.
+Prefill: all sessions start together with prompts never seen before (the first vnext cell, 1,000 x 1,
+is the first request after start-up and includes warm-up). Decode: the same prompts again,
+served from the prefix cache.
+
+### DaisyRose-27B
 
 | context | sessions | first token, cold (s) | prefill tok/s, all sessions | decode tok/s per session | decode tok/s total | first token, cached (s) |
 |--:|--:|--:|--:|--:|--:|--:|
-| 1,000 | 1 | 0.31 / 0.32 | 2962 / 2921 | 183.9 / 160.0 | 184 / 160 | 0.32 / 0.32 |
-| 1,000 | 2 | 0.48 / 0.48 | 2876 / 2910 | 118.7 / 120.5 | 219 / 227 | 0.49 / 0.48 |
-| 1,000 | 3 | 0.73 / 0.74 | 2983 / 2925 | 97.5 / 100.2 | 263 / 273 | 0.73 / 0.75 |
-| 8,000 | 1 | 2.49 / 2.55 | 3188 / 3114 | 134.7 / 136.0 | 135 / 136 | 0.95 / 0.45 |
-| 8,000 | 2 | 4.35 / 4.78 | 3285 / 3163 | 94.9 / 106.2 | 173 / 190 | 1.43 / 0.68 |
-| 8,000 | 3 | 5.77 / 6.34 | 3310 / 3183 | 85.5 / 87.8 | 200 / 234 | 2.19 / 1.04 |
-| 32,000 | 1 | 10.2 / 10.9 | 3122 / 2938 | 116.6 / 119.3 | 117 / 120 | 0.84 / 0.29 |
-| 32,000 | 2 | 16.5 / 17.5 | 3139 / 2956 | 104.8 / 97.7 | 191 / 187 | 1.24 / 0.42 |
-| 32,000 | 3 | 22.1 / 23.4 | 3148 / 2968 | 76.5 / 87.7 | 189 / 231 | 1.92 / 0.51 |
-| 128,000 | 1 | 48.0 / 54.0 | 2665 / 2369 | 109.5 / 103.0 | 110 / 103 | 1.44 / 1.15 |
-| 128,000 | 2 | 72.7 / 82.1 | 2668 / 2369 | 76.1 / 80.4 | 139 / 149 | 2.09 / 1.53 |
-| 128,000 | 3 | 97.3 / 109.1 | 2670 / 2376 | 61.7 / 62.8 | 151 / 162 | 3.16 / 2.26 |
-| 250,000 | 1 | 112.3 / 134.1 | 2226 / 1864 | 100.0 / 102.8 | 100 / 103 | 2.04 / 0.87 |
-| 250,000 | 2 | 169.5 / 202.2 | 2230 / 1869 | 60.9 / 66.1 | 111 / 127 | 2.93 / 1.19 |
-| 250,000 | 3 | 225.8 / 269.4 | 2234 / 1868 | (does not fit) | (does not fit) | 227 / 49 |
+| 1,000 | 1 | 0.31 / 0.38 | 2962 / 2409 | 183.9 / 177.3 | 184.2 / 177.6 | 0.32 / 0.33 |
+| 1,000 | 2 | 0.48 / 0.48 | 2876 / 2916 | 118.7 / 117.2 | 218.5 / 208.5 | 0.49 / 0.48 |
+| 1,000 | 3 | 0.73 / 0.74 | 2983 / 2933 | 97.5 / 96.8 | 262.9 / 270.6 | 0.73 / 0.75 |
+| 8,000 | 1 | 2.49 / 2.52 | 3188 / 3150 | 134.7 / 130.7 | 134.9 / 130.9 | 0.95 / 0.46 |
+| 8,000 | 2 | 4.35 / 4.73 | 3285 / 3200 | 94.9 / 107.8 | 173.1 / 203.5 | 1.43 / 0.68 |
+| 8,000 | 3 | 5.77 / 6.26 | 3310 / 3226 | 85.5 / 83.4 | 200.1 / 205.3 | 2.19 / 1.05 |
+| 32,000 | 1 | 10.23 / 10.57 | 3122 / 3020 | 116.6 / 110.5 | 116.8 / 110.7 | 0.84 / 0.27 |
+| 32,000 | 2 | 16.5 / 16.91 | 3139 / 3057 | 104.8 / 97.9 | 190.8 / 185.7 | 1.24 / 0.42 |
+| 32,000 | 3 | 22.12 / 22.8 | 3148 / 3051 | 76.5 / 85.9 | 188.7 / 240.4 | 1.92 / 0.48 |
+| 128,000 | 1 | 48.0 / 49.19 | 2665 / 2601 | 109.5 / 105.1 | 109.7 / 105.3 | 1.44 / 0.98 |
+| 128,000 | 2 | 72.69 / 74.8 | 2668 / 2602 | 76.1 / 83.0 | 138.9 / 151.4 | 2.09 / 1.46 |
+| 128,000 | 3 | 97.29 / 99.55 | 2670 / 2604 | 61.7 / 61.9 | 151.4 / 163.0 | 3.16 / 2.0 |
+| 250,000 | 1 | 112.29 / 115.58 | 2226 / 2162 | 100.0 / 99.7 | 100.2 / 99.9 | 2.04 / 0.92 |
+| 250,000 | 2 | 169.46 / 173.98 | 2230 / 2176 | 60.9 / 62.6 | 111.1 / 121.4 | 2.93 / 1.18 |
+| 250,000 | 3 | 225.75 / 231.57 | 2234 / 2175 | (does not fit) / 72.2 | (does not fit) / 108.6 | 227.23 / 4.34 |
 
-- Decode: equal or better at every context except the single 1,000-token stream (one run; the
-  short-prompt table above shows no gap).
-- First token from the prefix cache: about half of production's.
-- Cold prefill is slower on long contexts: -2..-4% at 8K, -6% at 32K, -11% at 128K, -16% at 250K.
-  Not the drafter (2417 tok/s at 128K without one) and not the libr4d revision (2380 with rx6).
-  Cause not found yet.
-- Three sessions of 250,000 tokens do not fit either pool; vnext kept two of the three in cache,
-  production had to prefill again.
+### Qwen3.8-27B
+
+| context | sessions | first token, cold (s) | prefill tok/s, all sessions | decode tok/s per session | decode tok/s total | first token, cached (s) |
+|--:|--:|--:|--:|--:|--:|--:|
+| 1,000 | 1 | 0.33 / 0.32 | 2807 / 2939 | 155.7 / 202.5 | 155.9 / 202.8 | 0.31 / 0.32 |
+| 1,000 | 2 | 0.48 / 0.48 | 2869 / 2915 | 118.1 / 123.2 | 208.6 / 223.4 | 0.49 / 0.48 |
+| 1,000 | 3 | 0.74 / 0.74 | 2938 / 2931 | 96.9 / 100.8 | 256.8 / 268.0 | 0.74 / 0.75 |
+| 8,000 | 1 | 2.47 / 2.53 | 3206 / 3128 | 133.9 / 121.7 | 134.1 / 121.9 | 0.95 / 0.45 |
+| 8,000 | 2 | 4.35 / 4.74 | 3291 / 3192 | 97.8 / 101.1 | 174.9 / 186.5 | 1.42 / 0.68 |
+| 8,000 | 3 | 5.74 / 6.31 | 3323 / 3202 | 78.8 / 86.7 | 196.0 / 229.4 | 2.24 / 1.02 |
+| 32,000 | 1 | 10.14 / 10.6 | 3150 / 3013 | 125.6 / 106.9 | 125.8 / 107.0 | 0.84 / 0.27 |
+| 32,000 | 2 | 16.39 / 17.0 | 3159 / 3041 | 100.5 / 90.2 | 171.7 / 176.6 | 1.25 / 0.4 |
+| 32,000 | 3 | 21.97 / 22.83 | 3171 / 3045 | 76.6 / 83.2 | 190.8 / 236.0 | 1.9 / 0.48 |
+| 128,000 | 1 | 47.76 / 49.35 | 2679 / 2592 | 109.7 / 113.8 | 109.9 / 114.0 | 1.45 / 0.9 |
+| 128,000 | 2 | 72.34 / 74.92 | 2680 / 2598 | 84.6 / 78.4 | 148.0 / 140.8 | 2.09 / 1.32 |
+| 128,000 | 3 | 96.92 / 99.85 | 2681 / 2599 | 59.2 / 65.6 | 140.7 / 172.7 | 3.15 / 1.87 |
+| 250,000 | 1 | 111.9 / 115.38 | 2234 / 2166 | 99.6 / 96.0 | 99.7 / 96.2 | 2.06 / 0.75 |
+| 250,000 | 2 | 168.75 / 174.1 | 2239 / 2174 | 64.6 / 66.2 | 116.3 / 122.6 | 2.94 / 1.01 |
+| 250,000 | 3 | 225.19 / 232.48 | 2239 / 2167 | (does not fit) / 51.1 | (does not fit) / 141.8 | 151.57 / 1.46 |
+
+- Cold prefill: vnext is 2-4% slower at every size. Not the chunk size (8320 tokens, five whole
+  cache blocks per step instead of four, changed nothing). Cause not isolated; the kernels are the
+  same source built by a newer ROCm toolchain.
+- Decode: equal for one stream, equal or faster with several.
+- First token from the prefix cache: half of production's or less.
+- Three sessions of 250,000 tokens fit vnext's pool and stay cached; production has to prefill one
+  of them again.
+
+## Four and eight short sessions (DaisyRose, two runs each)
+
+| context | sessions | prefill tok/s, all sessions | decode tok/s total |
+|--:|--:|--:|--:|
+| 1,000 | 4 | 3139, 3151 / 3046, 3023 | 272.6, 286.9 / 290.1, 324.0 |
+| 1,000 | 8 | 3292, 3290 / 3153, 3165 | 402.9, 360.6 / 380.3, 390.5 |
+| 8,000 | 4 | 3332, 3331 / 3218, 3219 | 218.8, 220.3 / 264.7, 260.0 |
+| 8,000 | 8 | 3361, 3356 / 3233, 3233 | 256.7, 258.5 / 331.8, 334.7 |
+
+The production serve shortens the draft as the batch grows (`RADIANCE_DYNAMIC_DRAFT`); vnext does
+not have that hook and is not slower without it.
 
 ## KV pool at 262,144 context
 
-| | tokens | concurrency |
-|---|--:|--:|
-| production | 839,958 | 3.20x |
-| vnext | 707,649 | 2.70x |
-| vnext without a drafter | 1,022,361 | 3.90x |
+| | KV memory per card | tokens | concurrency |
+|---|--:|--:|--:|
+| production (`GPU_UTIL=0.90`) | 15.4 GiB | 839,958 | 3.20x |
+| vnext, `KV_MEM` default | 15.4 GiB | 845,693 | 3.23x |
+| vnext, `KV_MEM=` (vLLM's measured sizing) | 13.2 GiB | 722,987 | 2.76x |
 
-vnext has more KV memory than production (16.8 against 15.4 GiB per card) but a block costs about
-30% more once the drafter's layers are in the pool. Not analysed further.
+Peak VRAM with the default, under eight 32K-token prefills followed by three 250K-token sessions:
+29.6 and 31.4 of 32.6 GiB. No allocation failure.
 
-## Prefix cache per turn of a growing conversation (`tests/hitdelta.py`)
+## Prefix cache per turn of a growing conversation (`tests/hitdelta.py`, 2026-11-21)
 
 Tokens that were already processed in the previous turn and are prefilled again: production
-1,800-3,200 per turn, vnext 50-1,500 (state cache fp32 in both). With
-`--mamba-cache-dtype bfloat16 --mamba-ssm-cache-dtype float16` vnext re-prefills 60-870 and the pool
-grows by about 9%; the effect of the 16-bit state on answers was not measured.
+1,800-3,200 per turn, vnext 50-1,500.
 
-## Correctness checks that pass on vnext and on production
+## Correctness
 
-`tests/cachecorrect.py` (20,000 tokens), `tests/cachecorrect2.py` (6,000 and 40,000 tokens, five
-variants in a row), `tests/functest.py` (tool call, tool result, image, JSON schema, streamed
-reasoning, thinking off).
+Pass on vnext with both targets, and on production: `tests/cachecorrect.py` (20,000 tokens),
+`tests/cachecorrect2.py` (6,000 and 40,000 tokens, several in a row), `tests/functest.py`.
+
+Soak (`tests/soak.py`, vnext, DaisyRose, 30 minutes, 6 clients): 556 requests (204 record lookups
+over shared documents, 71 growing conversations, 72 tool calls, 44 JSON-schema outputs, 165 streams
+of which about a third were aborted mid-stream), 0 wrong answers, 0 errors, server answering
+afterwards, VRAM flat.
+
+## Earlier measurements kept for reference
+
+- Without `R4D_ATTN_FP8=3` (first vnext runs, 2026-11-21): cold prefill 2369 tok/s at 128K and 1864
+  at 250K (production 2665 / 2226).
+- DSpine-b16 drafter on vnext (fp16 state cache): 122.3 / 109.8 tok/s at T=0 / T=1 with acceptance
+  4.96 / 4.58: accepts more per step, slower overall than DFlash2.

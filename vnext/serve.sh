@@ -14,7 +14,11 @@
 #   SPEC                             full --speculative-config JSON; overrides DRAFTER
 #   SERVED_NAMES [DaisyRose-27B]     model name(s) clients ask for
 #   NAME [radiance-vnext]  PORT [8080]  HOST [0.0.0.0]  GPUS [0,1]
-#   MAXLEN [262144]  MAXSEQS [8]  CHUNK [8192]  GPU_UTIL [0.90]  TOOLS [1]
+#   MAXLEN [262144]  MAXSEQS [8]  CHUNK [8192]  TOOLS [1]
+#   KV_MEM [16535624090]             bytes of KV cache per card (15.4 GiB, what production's GPU_UTIL=0.90
+#                                    comes to). KV_MEM= lets vLLM size it from GPU_UTIL [0.90] instead:
+#                                    safer, but it keeps 3 GiB + the activation peak free on ROCm and
+#                                    the pool drops from ~846K to ~723K tokens.
 #   GEN ['{"temperature":0.7,"top_p":0.95,"top_k":20}']   default sampling for requests without their own
 #   R4D_AR [1]                       radiance all-reduce between the cards (0 = RCCL only)
 #   EXTRA                            more `vllm serve` arguments
@@ -33,6 +37,8 @@ DRAFTER=${DRAFTER-Qwen3.8-27B-DFlash2-FP8}
 SERVED_NAMES=${SERVED_NAMES:-DaisyRose-27B}
 NAME=${NAME:-radiance-vnext}; PORT=${PORT:-8080}; HOST=${HOST:-0.0.0.0}; GPUS=${GPUS:-0,1}
 MAXLEN=${MAXLEN:-262144}; MAXSEQS=${MAXSEQS:-8}; CHUNK=${CHUNK:-8192}; GPU_UTIL=${GPU_UTIL:-0.90}
+KV_MEM=${KV_MEM-16535624090}
+EXTRA="${KV_MEM:+--kv-cache-memory $KV_MEM }${EXTRA:-}"
 GEN=${GEN:-'{"temperature":0.7,"top_p":0.95,"top_k":20}'}
 STATE=${STATE:-$HOME/.cache/radiance-vnext}
 R4D_SRC=${R4D_SRC:-$HOME/.cache/radiance-libr4d/b9e42ab-rx9}
