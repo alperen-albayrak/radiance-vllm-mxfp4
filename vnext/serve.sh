@@ -19,6 +19,11 @@
 #                                    comes to). KV_MEM= lets vLLM size it from GPU_UTIL [0.90] instead:
 #                                    safer, but it keeps 3 GiB + the activation peak free on ROCm and
 #                                    the pool drops from ~846K to ~723K tokens.
+#   BUSY_CHUNK [1664]  PREFILL_EVERY [8]   keep other sessions decoding while one prefills a long
+#                                    prompt: with more than one request in flight a prompt gets at most
+#                                    BUSY_CHUNK tokens per step, and while anything is decoding only every
+#                                    PREFILL_EVERY-th step carries prefill. A lone request is not affected.
+#                                    BUSY_CHUNK=0 PREFILL_EVERY=1 turns both off (see RESULTS.md).
 #   GEN ['{"temperature":0.7,"top_p":0.95,"top_k":20}']   default sampling for requests without their own
 #   R4D_AR [1]                       radiance all-reduce between the cards (0 = RCCL only)
 #   EXTRA                            more `vllm serve` arguments
@@ -38,7 +43,8 @@ SERVED_NAMES=${SERVED_NAMES:-DaisyRose-27B}
 NAME=${NAME:-radiance-vnext}; PORT=${PORT:-8080}; HOST=${HOST:-0.0.0.0}; GPUS=${GPUS:-0,1}
 MAXLEN=${MAXLEN:-262144}; MAXSEQS=${MAXSEQS:-8}; CHUNK=${CHUNK:-8192}; GPU_UTIL=${GPU_UTIL:-0.90}
 KV_MEM=${KV_MEM-16535624090}
-EXTRA="${KV_MEM:+--kv-cache-memory $KV_MEM }${EXTRA:-}"
+BUSY_CHUNK=${BUSY_CHUNK-1664}; PREFILL_EVERY=${PREFILL_EVERY-8}
+EXTRA="${KV_MEM:+--kv-cache-memory $KV_MEM }--long-prefill-token-threshold ${BUSY_CHUNK:-0} --prefill-schedule-interval ${PREFILL_EVERY:-1} ${EXTRA:-}"
 GEN=${GEN:-'{"temperature":0.7,"top_p":0.95,"top_k":20}'}
 STATE=${STATE:-$HOME/.cache/radiance-vnext}
 R4D_SRC=${R4D_SRC:-$HOME/.cache/radiance-libr4d/b9e42ab-rx9}

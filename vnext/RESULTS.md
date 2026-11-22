@@ -95,6 +95,39 @@ not have that hook and is not slower without it. vLLM's own schedule
 backend and gave the same totals within run-to-run noise (8 x 1,000: 383, 393; 8 x 8,000: 352, 334),
 so it is not set by default.
 
+## A long prefill next to decoding sessions (`tests/measure/m.py stall`, 2026-11-22)
+
+Two sessions decode from an 8K context; a third sends a cold prompt. "Decode" is stream chunks
+per second of each decoding session (31 when nothing else runs); "longest gap" is the p99 / max
+time between two chunks during the prefill.
+
+| setting | prompt | prefill tok/s | decode chunks/s | longest gap (p99 / max) |
+|---|--:|--:|--:|--:|
+| no throttling (`BUSY_CHUNK=0 PREFILL_EVERY=1`), as production behaves | 250K | 2121 | 0.6 | 4.1 s / 4.1 s |
+| `--prefill-schedule-interval 8` | 100K | 2384 | 3.5 | 2.8 s / 3.0 s |
+| chunk 1664, every 4th step | 100K | 2106 | 5.5 | 0.8 s / 1.9 s |
+| chunk 3328, every 8th step | 100K | 2093 | 5.3 | 1.5 s / 2.4 s |
+| **chunk 1664, every 8th step (default)** | 100K | 1823 | 8.9 | 0.8 s / 0.8 s |
+
+The default adds a radiance rule on top of vLLM's two options
+(`RADIANCE_BUSY_PREFILL_MIN_TOKENS=3328` in `radiance-tp2.env`): a prefill with at most that many
+tokens left is neither capped nor deferred, and the cap applies only while something is
+decoding. Without the rule, three cold 32K prompts advanced in lockstep (mean first token 30.5 s
+instead of 22.7 s) and every short turn waited for its cadence slot. With it: three cold 32K
+prompts 22.7 s / 3063 tok/s (as without throttling), a lone request unchanged.
+Cost: under a constantly decoding load long prompts take longer (8-minute soak with six clients:
+record lookups over 2K-60K-token documents averaged 38 s instead of 8 s).
+
+## Other measurements of 2026-11-22 (`tests/measure/m.py`)
+
+- Draft acceptance after a prefix-cache hit (`hit`): unchanged (acceptance length cold 3.45, same
+  prompt from the cache 3.45; other question on a cached prefix 3.68, cold 3.69).
+- Step time by context (`steps`, 7 draft tokens): 24.7 ms at 1K, 25.7 at 32K, 28.7 at 128K, 32.6 at
+  250K. The growth is the same with 3 draft tokens, so it does not scale with the verify rows.
+- Production with `KVCACHE=ram KVCACHE_RAM_GIB=64` (`evict`, `evictcheck`): an evicted 250K prompt
+  is back in 13-23 s instead of 115 s. 5 of 6 answers correct after a restore (4 of 4 cold): not
+  enough to clear it. A stopped server leaves `/dev/shm/vllm_offload_*.mmap` (64 GiB) behind.
+
 ## KV pool at 262,144 context
 
 | | KV memory per card | tokens | concurrency |

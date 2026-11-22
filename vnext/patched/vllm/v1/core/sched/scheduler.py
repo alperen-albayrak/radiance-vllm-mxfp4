@@ -775,6 +775,11 @@ class Scheduler(SchedulerInterface):
                 long_prefill_token_threshold, input_budget // num_eligible_reqs
             )
 
+        # radiance: the cap and the cadence exist to keep decodes moving; with nothing
+        # decoding, prompts prefill first come, first served at full chunk size.
+        if _RAD_BUSY_MIN > 0 and not any(not r.is_prefill_chunk for r in self.running):
+            long_prefill_token_threshold = 0
+
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
@@ -804,7 +809,11 @@ class Scheduler(SchedulerInterface):
                 req_index += 1
                 continue
 
-            if defer_prefills and request.is_prefill_chunk:
+            if (
+                defer_prefills
+                and request.is_prefill_chunk
+                and _radiance_long_prefill(request.num_tokens - request.num_computed_tokens)
+            ):
                 # DP prefill balancing: defer this in-progress prefill chunk to a
                 # cadence-aligned step; decodes still run to fill this step.
                 req_index += 1
@@ -826,7 +835,10 @@ class Scheduler(SchedulerInterface):
                 + request.num_output_placeholders
                 - request.num_computed_tokens
             )
-            if 0 < long_prefill_token_threshold < num_new_tokens:
+            if (
+                0 < long_prefill_token_threshold < num_new_tokens
+                and _radiance_long_prefill(num_new_tokens)
+            ):
                 num_new_tokens = long_prefill_token_threshold
             num_new_tokens = min(
                 num_new_tokens, token_budget, input_budget - draft_slots
@@ -1329,6 +1341,9 @@ class Scheduler(SchedulerInterface):
                 elif (
                     defer_prefills
                     and effective_computed_tokens < request.num_tokens - 1
+                    and _radiance_long_prefill(
+                        request.num_tokens - effective_computed_tokens
+                    )
                 ):
                     # DP prefill balancing: defer this step's local prefill
                     # compute to a cadence-aligned step.
@@ -1371,7 +1386,10 @@ class Scheduler(SchedulerInterface):
                             num_new_tokens = padded_num_tokens
                             pad_spec_decode = True
 
-                    if 0 < long_prefill_token_threshold < num_new_tokens:
+                    if (
+                        0 < long_prefill_token_threshold < num_new_tokens
+                        and _radiance_long_prefill(num_new_tokens)
+                    ):
                         num_new_tokens = long_prefill_token_threshold
 
                     # chunked prefill has to be enabled explicitly to allow
@@ -3993,6 +4011,21 @@ class Scheduler(SchedulerInterface):
         self.failed_recving_kv_req_ids |= async_failed_req_ids
         # Return sync affected IDs to skip in update_from_output
         return sync_failed_req_ids
+
+
+# ---- RADIANCE busy-prefill policy -------------------------------------------------------------
+# --long-prefill-token-threshold and --prefill-schedule-interval keep decoding sessions alive
+# while a long prompt prefills, but as shipped they also slow every short prefill (the few
+# thousand new tokens of an agent turn) and make concurrent cold prompts advance in lockstep.
+# With RADIANCE_BUSY_PREFILL_MIN_TOKENS=N (> 0) a prefill with at most N tokens left is neither
+# capped nor deferred, and the cap applies only while something is decoding. 0 = stock behaviour.
+import os as _rad_busy_os
+
+_RAD_BUSY_MIN = int(_rad_busy_os.environ.get("RADIANCE_BUSY_PREFILL_MIN_TOKENS", "0") or 0)
+
+
+def _radiance_long_prefill(remaining_tokens: int) -> bool:
+    return _RAD_BUSY_MIN <= 0 or remaining_tokens > _RAD_BUSY_MIN
 
 
 # ---- RADIANCE dynamic verify width (patch_dynwidth.py) --------------------------------------

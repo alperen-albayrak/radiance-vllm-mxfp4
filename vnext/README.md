@@ -44,6 +44,16 @@ instead of 846K. With 15.4 GiB the fuller card peaked at 31.4 of 32.6 GiB under 
 prefills and three 250K-token sessions. If a card also drives a display or something
 else takes VRAM there, lower `KV_MEM` or set `KV_MEM=` to get vLLM's own sizing back.
 
+### Long prompts next to decoding sessions
+
+Stock scheduling gives a decoding session one step per prefill step, so it nearly stops while
+another session prefills a long prompt (0.6 instead of 31 stream chunks per second for two
+minutes at 250K). `serve.sh` therefore passes `--long-prefill-token-threshold` (`BUSY_CHUNK`, 1664)
+and `--prefill-schedule-interval` (`PREFILL_EVERY`, 8), and `radiance-tp2.env` sets
+`RADIANCE_BUSY_PREFILL_MIN_TOKENS=3328`, a radiance rule in `scheduler.py`: prefills with at most
+that many tokens left are exempt, and the cap applies only while something is decoding. Numbers
+and the trade-off are in `RESULTS.md`.
+
 ## What changed against v032
 
 Overlay files that needed more than a three-way merge:
@@ -53,6 +63,7 @@ Overlay files that needed more than a three-way merge:
 | `vllm/v1/core/kv_cache_planning.py` | The KV group-size search moved here from `kv_cache_utils.py` (vLLM moved the policy). |
 | `vllm/_aiter_ops.py`, `kernels/linear/mxfp4/aiter.py` | The aiter fallback GEMM moved; the gfx12x enablement follows it. |
 | `vllm/model_executor/layers/linear.py` | `apply_flattened` passes radiance's `(q, scale)` tuples through. |
+| `vllm/v1/core/sched/scheduler.py` | Busy-prefill rule (`RADIANCE_BUSY_PREFILL_MIN_TOKENS`), see above. |
 | `vllm/v1/worker/gpu/model_runner.py`, `radiance_verifyhead.py` | The fast verify head is disarmed right after the sampling step and checks the row count, so prompt-logprob and warm-up calls stay on the exact head. |
 | `radiance_gdnmerge.py` | On this vLLM the merged projection feeds the standard core op, like `forward_cuda`. |
 | `radiance_arnq.py` | Declines when vLLM's fused all-reduce+norm is active. |

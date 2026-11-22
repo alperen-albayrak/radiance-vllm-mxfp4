@@ -47,7 +47,7 @@ mod	vllm/third_party/flash_linear_attention/ops/chunk.py	5	156f083cf9b49ac1f120e
 mod	vllm/third_party/flash_linear_attention/ops/solve_tril.py	0	3bc4ab5f32d30a181e81ef25c49b6696f705c11bb94534ee09803d60f5e34027
 mod	vllm/v1/core/kv_cache_planning.py	7	156948ecfaba4d75cd4772def8d4e07640d8492dae3c135332b5552377f6448e
 mod	vllm/v1/core/sched/async_scheduler.py	2	b866cde3441f31ebb30106fcf8defd0a2f0b08ae292fb77c70e778e5474f3bdd
-mod	vllm/v1/core/sched/scheduler.py	15	4884fb6ea5445d50ac7be6e2cc14875b72314e5762df55477b9358c520191ca8
+mod	vllm/v1/core/sched/scheduler.py	24	6c6dbdbf2c7f633d1102e50ae532f395689ae3157ae90c0436c7c59048fc4191
 mod	vllm/v1/engine/core.py	3	07c8167a4a2471bb01cf55186f9b004d66b69fd7be73581a910316cffefd684c
 mod	vllm/v1/worker/gpu/async_utils.py	2	28c5b681cfdfab0194db8e4757b8f36471704888bdb4f7181050abefdaaebbfe
 mod	vllm/v1/worker/gpu/model_runner.py	9	c513707fe6b678c28d7bbf253c949b313cfa961144e442c66070bebc6ab24314
