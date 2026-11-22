@@ -64,9 +64,17 @@ served from the prefix cache.
 | 250,000 | 2 | 168.75 / 174.1 | 2239 / 2174 | 64.6 / 66.2 | 116.3 / 122.6 | 2.94 / 1.01 |
 | 250,000 | 3 | 225.19 / 232.48 | 2239 / 2167 | (does not fit) / 51.1 | (does not fit) / 141.8 | 151.57 / 1.46 |
 
-- Cold prefill: vnext is 2-4% slower at every size. Not the chunk size (8320 tokens, five whole
-  cache blocks per step instead of four, changed nothing). Cause not isolated; the kernels are the
-  same source built by a newer ROCm toolchain.
+- Cold prefill: vnext is 2-4% slower at every size. What it is not (measured 2026-11-22):
+  - not the chunk size: 8320 tokens (five whole cache blocks per step instead of four) changed nothing;
+  - not the compiler: `radiance_mxfp4_fp8.so` and `r4d.so` built with production's ROCm 7.14 hipcc and
+    loaded in this image gave the same prefill (3018-3035 tok/s at 32K, 2604-2610 at 128K);
+  - not the CPU side or the number of steps: with `RADIANCE_STEP_TRACE=1` on both serves the
+    difference is in GPU time per token and is nearly constant over the context (64K prompt,
+    full steps: production 0.304 -> 0.363 ms/token, vnext 0.314 -> 0.375).
+  Without a drafter vnext's first full step costs 0.303 ms/token, so the drafter's context step
+  (concatenate five hidden states, `fc`, K/V of five layers, for every prefill token) is about
+  3.6% of prefill here. Whether production pays less for it could not be measured: production does
+  not start without the DFlash drafter on this checkpoint (`SPEC_METHOD=mtp` fails in compile).
 - Decode: equal for one stream, equal or faster with several.
 - First token from the prefix cache: half of production's or less.
 - Three sessions of 250,000 tokens fit vnext's pool and stay cached; production has to prefill one
@@ -82,7 +90,10 @@ served from the prefix cache.
 | 8,000 | 8 | 3361, 3356 / 3233, 3233 | 256.7, 258.5 / 331.8, 334.7 |
 
 The production serve shortens the draft as the batch grows (`RADIANCE_DYNAMIC_DRAFT`); vnext does
-not have that hook and is not slower without it.
+not have that hook and is not slower without it. vLLM's own schedule
+(`"num_speculative_tokens_per_batch_size":[[1,2,7],[3,4,6],[5,8,5]]` in `SPEC`) works with the R4D
+backend and gave the same totals within run-to-run noise (8 x 1,000: 383, 393; 8 x 8,000: 352, 334),
+so it is not set by default.
 
 ## KV pool at 262,144 context
 
