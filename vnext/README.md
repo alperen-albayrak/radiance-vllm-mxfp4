@@ -4,6 +4,8 @@ The radiance kernels (MXFP4 W4A8 GEMM, R4D attention and gated-delta-net, fp8 st
 all-reduce, DFlash2 draft and verify heads, embed-host) as an overlay on a current vLLM build,
 for two Radeon AI PRO R9700 (gfx1201) at TP=2.
 
+- Status: serving on the development box since 2026-11-22 as a trial in real use, next to the
+  production serve (which is unchanged). Measurements against production: `RESULTS.md`.
 - Base: see `BASE` (vLLM commit and the image it was tested on).
 - Derived from `../v032/` (the same overlay on vLLM 0.32.0). `v032/` is unchanged.
 - The production serve (`../serve-mxfp4.sh`, image `stilldeadcode/vllm-radiance:0.9.3`,
