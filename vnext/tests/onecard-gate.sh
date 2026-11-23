@@ -10,6 +10,7 @@
 #   CARD [0]  MODELS [~/models]  MODEL [DaisyRose-27B-MXFP4-mtpfp8]  NAMES [DaisyRose-27B]
 #   PORT [8181]  ENGINES ["093 vnext"]  SOAK_MIN [20]  OUT [./onecard-gate-<date>]
 #   SIZES [1000,8000,32000,128000,200000]  SESSIONS [1,2,3]   bench_ctx.py grid
+#   VNEXT_DIR [this repo's vnext/]   the vnext overlay to serve, e.g. another checkout's, to compare bases
 #   CORPUS                           .py tree the bench prompts are cut from (default: this repository)
 #   CARD may name two cards (CARD=0,1): the same gate for a two-card serve (vnext only)
 # What decides that one card on vnext is tested (SERVING.md lists the same): every functional and soak check passes, the
@@ -34,7 +35,7 @@ start() {   # $1 = engine
     093)   SNAP=$MODELS/$MODEL MODELS=$MODELS GPUS=$CARD PORT=$PORT NAME=$NAME RUNTIME=docker DETACH=1 \
              SERVED_NAMES=$NAMES RADIANCE_EMBED_HOST=1 "$REPO/serve-tp1.sh" ;;
     vnext) MODELS=$MODELS MODEL=$MODEL GPUS=$CARD PORT=$PORT NAME=$NAME SERVED_NAMES=$NAMES DETACH=1 \
-             "$REPO/vnext/serve.sh" ;;
+             "${VNEXT_DIR:-$REPO/vnext}/serve.sh" ;;
   esac
   for _ in $(seq 1 240); do
     curl -sf -m 3 "$URL/v1/models" >/dev/null && return 0
