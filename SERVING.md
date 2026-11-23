@@ -18,7 +18,7 @@ name, so a client does not notice which one is running.
 
 ## 1. Once: set up
 
-You need Linux with the `amdgpu` driver, Docker (or Podman) able to reach `/dev/kfd` and `/dev/dri`,
+You need Linux with the `amdgpu` driver, Docker able to reach `/dev/kfd` and `/dev/dri` (`up.sh` and the two-card serve use Docker; Podman works only for `setup-mxfp4.sh` and the `serve-*.sh` launchers),
 git, about 60 GiB of disk and a Hugging Face login only if a download asks for one.
 
 In a clone of this repository:
