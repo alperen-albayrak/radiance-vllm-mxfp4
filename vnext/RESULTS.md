@@ -81,6 +81,56 @@ sessions. One card therefore stays on 0.9.3 (`../up.sh` default). The int2 verif
 on one card at all before 2026-11-23 (arming ran out of memory and the error was swallowed);
 fixing that took the nightly from 74.9 to 80.3 tok/s, the rest of the gap is not diagnosed.
 
+### 0.9.3 against v0.34.0, both on the fixed links (2026-11-23 evening)
+
+The same gate again for 0.9.3 (`serve-tp2.sh` with `GPU_UTIL=0.90` as the production serve, and
+`serve-tp1.sh` on card 1), so every pair below is matched: same day, same links, same card(s),
+same prompts. Values are 0.9.3 / v0.34.0. Cells whose sessions do not fit the cache together are
+left out (they prefill again).
+
+**Two cards.** Single stream T=0 168.6 / 171.3 tok/s, T=1 155.6 / 157.6.
+
+| context | sessions | prefill tok/s, all sessions | decode tok/s, total |
+|--:|--:|--:|--:|
+| 1,000 | 1 | 4076 / 3782 | 168 / 167 |
+| 1,000 | 2 | 5114 / 5113 | 259 / 267 |
+| 1,000 | 3 | 5321 / 5167 | 390 / 364 |
+| 8,000 | 1 | 5722 / 5609 | 137 / 143 |
+| 8,000 | 2 | 5930 / 5650 | 222 / 228 |
+| 8,000 | 3 | 5958 / 5660 | 267 / 291 |
+| 32,000 | 1 | 5427 / 5182 | 125 / 126 |
+| 32,000 | 2 | 5438 / 5205 | 205 / 227 |
+| 32,000 | 3 | 5465 / 5214 | 260 / 294 |
+| 128,000 | 1 | 4124 / 3971 | 108 / 125 |
+| 128,000 | 2 | 4145 / 3988 | 171 / 180 |
+| 128,000 | 3 | 4149 / 3995 | 183 / 204 |
+| 250,000 | 1 | 3142 / 3038 | 97 / 106 |
+| 250,000 | 2 | 3155 / 3050 | 130 / 138 |
+
+**One card.** Single stream T=0 102.1 / 93.5 tok/s, T=1 97.9 / 84.4.
+
+| context | sessions | prefill tok/s, all sessions | decode tok/s, total |
+|--:|--:|--:|--:|
+| 1,000 | 1 | 3305 / 2735 | 112 / 101 |
+| 1,000 | 2 | 3217 / 2888 | 192 / 156 |
+| 1,000 | 3 | 3288 / 2986 | 250 / 234 |
+| 8,000 | 1 | 3333 / 3343 | 135 / 82 |
+| 8,000 | 2 | 3334 / 3374 | 168 / 141 |
+| 8,000 | 3 | 3368 / 3385 | 203 / 184 |
+| 32,000 | 1 | 3024 / 2999 | 98 / 80 |
+| 32,000 | 2 | 3042 / 3022 | 144 / 128 |
+| 128,000 | 1 | 2195 / 2187 | 68 / 65 |
+| 200,000 | 1 | 1817 / 1811 | 69 / 63 |
+
+- Two cards: the same single-stream speed (+1-2%), prefill 3-5% slower at every size, decode with
+  two and three sessions 3-15% faster. v0.34.0 is the better two-card serve for 2-3 sessions.
+- One card: single stream 8% (T=0) and 14% (T=1) slower, decode 4-39% slower in the grid, prefill
+  the same from 8K tokens and 10-17% slower at 1K. 0.9.3 stays the one-card serve.
+- Correctness: both pass. In the soak (fixed seed) 0.9.3 answers one 60K-token lookup wrongly, in
+  both of its runs that day; v0.34.0 answers it right.
+- 0.9.3 does not report `cached_tokens`, so its rows cannot show whether the decode phase was
+  served from the cache; the cells left out are the ones where v0.34.0 shows it was not.
+
 ## 2026-11-22 (nightly base, slow link on the second card)
 
 Two R9700, TP=2, MXFP4 target (W4A8), DFlash2-FP8 drafter with 7 draft tokens, fp8 KV, 262,144

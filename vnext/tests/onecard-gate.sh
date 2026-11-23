@@ -12,7 +12,7 @@
 #   SIZES [1000,8000,32000,128000,200000]  SESSIONS [1,2,3]   bench_ctx.py grid
 #   VNEXT_DIR [this repo's vnext/]   the vnext overlay to serve, e.g. another checkout's, to compare bases
 #   CORPUS                           .py tree the bench prompts are cut from (default: this repository)
-#   CARD may name two cards (CARD=0,1): the same gate for a two-card serve (vnext only)
+#   CARD may name two cards (CARD=0,1): the same gate for a two-card serve
 # What decides that one card on vnext is tested (SERVING.md lists the same): every functional and soak check passes, the
 # KV pool is at least 0.9.3's, decode per session within ~3% and prefill within ~5% (the
 # two-card port's own bar, RESULTS.md). The KV size it logs is what KV_MEM should then pin.
@@ -32,8 +32,11 @@ if ss -ltn | grep -q ":$PORT "; then echo "port $PORT is in use" >&2; exit 1; fi
 start() {   # $1 = engine
   docker rm -f "$NAME" >/dev/null 2>&1
   case "$1" in
-    093)   SNAP=$MODELS/$MODEL MODELS=$MODELS GPUS=$CARD PORT=$PORT NAME=$NAME RUNTIME=docker DETACH=1 \
-             SERVED_NAMES=$NAMES RADIANCE_EMBED_HOST=1 "$REPO/serve-tp1.sh" ;;
+    # 0.9.3 on as many cards as CARD names; two cards with the production serve's GPU_UTIL 0.90.
+    093)   n=$(awk -F, '{print NF}' <<<"$CARD")
+           [ "$n" = 2 ] && export GPU_UTIL=${GPU_UTIL:-0.90}
+           SNAP=$MODELS/$MODEL MODELS=$MODELS GPUS=$CARD PORT=$PORT NAME=$NAME RUNTIME=docker DETACH=1 \
+             SERVED_NAMES=$NAMES RADIANCE_EMBED_HOST=1 "$REPO/serve-tp$n.sh" ;;
     vnext) MODELS=$MODELS MODEL=$MODEL GPUS=$CARD PORT=$PORT NAME=$NAME SERVED_NAMES=$NAMES DETACH=1 \
              "${VNEXT_DIR:-$REPO/vnext}/serve.sh" ;;
   esac

@@ -107,7 +107,8 @@ One card on vLLM v0.34.0 (`ONE_CARD=vnext ./up.sh`) was measured against 0.9.3 o
 on 2026-11-23 (`vnext/tests/onecard-gate.sh`; vnext/RESULTS.md, "One card on v0.34.0"). It is
 correct (functional checks, answers after a prefix-cache hit, a 20-minute soak), holds the same KV
 cache (247K tokens) and reads prompts of 8K tokens and more as fast. It decodes slower: 93.5 against
-106 tok/s for one stream, and 10-35% behind with one or two sessions. Until that gap is found, 0.9.3
+102 tok/s for one stream (re-measured with both on the fixed PCIe link), and 4-39% behind in
+the context grid. Until that gap is found, 0.9.3
 is the faster engine on one card.
 
 ## Switching models
