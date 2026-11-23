@@ -9,12 +9,43 @@ setting; this page is the day-to-day part.
 | Engine | image `stilldeadcode/vllm-radiance:0.9.3`, single-GPU profile (`serve-tp1.sh`) | current vLLM with this repo's overlay (`vnext/serve.sh`, image in `vnext/BASE`) |
 | Context | 220,000 tokens | 262,144 tokens |
 | Requests at once | 3 | 4 (`MAXSEQS`) |
-| One stream, short prompts | ~138 tok/s | ~145-158 tok/s |
-| Prefill | ~2,500-2,800 tok/s | ~3,000-3,200 tok/s |
-| Measured in | README.md, "One card (TP=1)" | vnext/RESULTS.md |
+| Speed | see [One card or two](#one-card-or-two) | about 1.6x one card when generating, 1.75x when reading a prompt |
 
 Both serve the same checkpoint with the same DFlash2 drafter, on the same port, under the same model
 name, so a client does not notice which one is running.
+
+## One card or two
+
+The same benchmark on both: BetterBench, Qwen3.8-27B native MXFP4, DFlash2 drafter with 7 draft
+tokens, the 0.9.3 engine on both (README.md, "Performance": two cards measured 2026-08-30, one card
+2026-09-16 at a 210 W power cap with 65,536 context). The current-vLLM two-card serve that `up.sh`
+starts generates as fast as 0.9.3 and reads prompts 2-4% slower (vnext/RESULTS.md), so the two-card
+column holds for it within that margin.
+
+| | One R9700 | Two R9700 | Two / one |
+|---|--:|--:|--:|
+| Generation, one stream (tok/s, mixed tasks) | 137.7 | 224.3 | 1.63x |
+| Time per stream update (ms) | 35.2 | 22.9 | 0.65x |
+| First token, short prompt (ms) | 95 | 53 | 0.56x |
+| Total generation, 2 requests at once (tok/s) | 207.6 | 302.6 | 1.46x |
+| Total generation, 4 requests at once (tok/s) | 319.0 | 442.7 | 1.39x |
+| Total generation, 8 requests at once (tok/s) | 416.3 | 572.8 | 1.38x |
+| Reading a prompt of ~6K tokens (tok/s) | 2,720 | 4,773 | 1.75x |
+| Reading a prompt of ~47K tokens (tok/s) | 2,480 | 4,330 | 1.75x |
+| KV cache (tokens, all requests together) | ~200,000 | ~940,000 | 4.7x |
+
+What that means in use:
+
+- **One person, one conversation:** one card is comfortable. 138 tok/s is faster than anyone reads;
+  a 47K-token prompt takes ~19 s on one card against ~11 s on two.
+- **Agents and long contexts:** two cards. An agent sends long prompts again and again; what is
+  cached is not read again, and the KV cache decides how much stays cached: one card holds about one 200K-token
+  session, two cards three of 250K.
+- **Several users:** the gap narrows to ~1.4x in total throughput, but each request on one card is
+  slower (79 against 104 tok/s per request at 8 at once).
+
+The numbers are not from one sitting, and prefill on one card follows its power limit (3,552 tok/s
+at 2K tokens with 300 W instead of 210 W, README.md), so take the ratios as about right, not exact.
 
 ## 1. Once: set up
 
@@ -49,7 +80,9 @@ cp local.env.example local.env        # and edit: MODELS, MODEL, PORT, ...
 ```
 
 `up.sh` counts the usable cards and picks the engine from the table above: two cards (or more, of
-which it uses the first two) get the current-vLLM serve, one card the single-GPU profile.
+which it uses the first two) get the current-vLLM serve, one card the single-GPU profile on 0.9.3.
+One card on the current vLLM is ready but not measured yet (`ONE_CARD=vnext ./up.sh` to try it;
+vnext/README.md, "One card").
 `CARDS=1 ./up.sh` runs on one card on a two-card host, for example to keep the second card free.
 `./up.sh --print` shows the container command without starting anything.
 

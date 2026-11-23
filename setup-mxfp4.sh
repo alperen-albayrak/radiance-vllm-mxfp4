@@ -136,7 +136,7 @@ print(p)
 }
 
 # ------------------------------------------------------------------ 3. source checkpoint
-step "3/6  AMD's MXFP4 release ($SRC_REPO)"
+step "3/6  the MXFP4 release ($SRC_REPO)"
 if [ -d "$SNAP" ] && [ -f "$SNAP/config.json" ]; then
   ok "skipped -- the built checkpoint already exists at $SNAP"
   SRC=""
