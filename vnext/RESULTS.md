@@ -1,4 +1,87 @@
-# vnext measurements (2026-11-22)
+# vnext measurements
+
+## 2026-11-23: base moved to vLLM v0.34.0, and a slow PCIe link found
+
+**Everything from 2026-11-21 to 2026-11-23 morning below this section was measured with the
+second card's link degraded.** Its root port had trained at PCIe 2.0 x8 (5 GT/s) instead of 5.0
+x8 (32 GT/s) at a boot on 2026-11-19 (the first card was fine; both read back 14-21 GB/s on
+2026-10-06). A reboot retrained it. At TP=2 the cards exchange activations every layer, so the
+slow link capped prefill: the absolute prefill figures further down are low, while each
+comparison in them is fair (both sides had the same link). Check a box with
+
+    for p in /sys/bus/pci/devices/*/; do [ -f $p/current_link_speed ] && echo "$p $(cat $p/current_link_speed) x$(cat $p/current_link_width)"; done
+
+under load (an idle card drops its link to save power) and look for a GPU's upstream port well
+below its maximum.
+
+The overlay now targets the v0.34.0 release (`BASE`; README "Port to v0.34.0"): the nightly tag it
+was built on would be deleted after ~5 weeks. Same gate on both, both on the fixed links,
+`tests/onecard-gate.sh` with `CARD=0,1`, `SIZES=1000,8000,32000,128000,250000`, `SESSIONS=1,2,3`
+and the vLLM source tree as corpus; values are nightly / v0.34.0, one run each.
+
+| | nightly | v0.34.0 |
+|---|---|---|
+| functional checks, answers after a cache hit, 20-minute soak | pass | pass |
+| KV pool | 845,693 tokens | 841,218 tokens |
+
+| context | sessions | prefill tok/s, all sessions | decode tok/s, total |
+|--:|--:|--:|--:|
+| 1,000 | 1 | 3830 / 3782 | 230 / 167 |
+| 1,000 | 2 | 5119 / 5113 | 255 / 267 |
+| 1,000 | 3 | 5186 / 5167 | 346 / 364 |
+| 8,000 | 1 | 5592 / 5609 | 148 / 143 |
+| 8,000 | 2 | 5621 / 5650 | 282 / 228 |
+| 8,000 | 3 | 5630 / 5660 | 292 / 291 |
+| 32,000 | 1 | 5160 / 5182 | 122 / 126 |
+| 32,000 | 2 | 5179 / 5205 | 251 / 227 |
+| 32,000 | 3 | 5190 / 5214 | 297 / 294 |
+| 128,000 | 1 | 3955 / 3971 | 114 / 125 |
+| 128,000 | 2 | 3970 / 3988 | 185 / 180 |
+| 128,000 | 3 | 3975 / 3995 | 197 / 204 |
+| 250,000 | 1 | 3023 / 3038 | 101 / 106 |
+| 250,000 | 2 | 3034 / 3050 | 141 / 138 |
+| 250,000 | 3 | 3035 / 3052 | 161 / 160 |
+
+Single stream (`specdec_compare.py`): T=0 171.1 / 171.3 tok/s, T=1 155.5 / 157.6; acceptance T=0 4.16 / 4.17.
+
+Prefill is the same within 0.5%. Decode differs by more than the run-to-run noise in two cells (1K x 1
+and 8K x 2), in opposite directions in the others; the 1K decode phase is short. Read: the same
+engine speed, with a release image.
+
+### One card on v0.34.0
+
+Same gate, card 1, values are 0.9.3 (`serve-tp1.sh`, measured that morning on the slow link) /
+v0.34.0 (fast link). Cells whose sessions do not fit the cache together are left out (they prefill
+again and their decode figure means nothing).
+
+| | 0.9.3 | v0.34.0 |
+|---|---|---|
+| functional checks, answers after a cache hit | pass | pass |
+| 20-minute soak | 1 wrong answer (60K-token lookup) | pass |
+| KV pool (`KV_MEM` 8.5 GiB) | 248,235 tokens | 247,052 tokens |
+
+| context | sessions | prefill tok/s | decode tok/s, total |
+|--:|--:|--:|--:|
+| 1,000 | 1 | 3299 / 2735 | 100 / 101 |
+| 1,000 | 2 | 3221 / 2888 | 207 / 156 |
+| 1,000 | 3 | 3293 / 2986 | 235 / 234 |
+| 8,000 | 1 | 3337 / 3343 | 130 / 82 |
+| 8,000 | 2 | 3340 / 3374 | 175 / 141 |
+| 8,000 | 3 | 3377 / 3385 | 237 / 184 |
+| 32,000 | 1 | 3028 / 2999 | 95 / 80 |
+| 32,000 | 2 | 3048 / 3022 | 133 / 128 |
+| 32,000 | 3 | 3053 / 3022 | 173 / 160 |
+| 128,000 | 1 | 2199 / 2187 | 72 / 65 |
+| 200,000 | 1 | 1820 / 1811 | 63 / 63 |
+
+Single stream: T=0 106.0 / 93.5 tok/s, T=1 95.2 / 84.4.
+
+Correct, the same cache and prefill from 8K up, but decode is 10-35% behind at one and two
+sessions. One card therefore stays on 0.9.3 (`../up.sh` default). The int2 verify head did not arm
+on one card at all before 2026-11-23 (arming ran out of memory and the error was swallowed);
+fixing that took the nightly from 74.9 to 80.3 tok/s, the rest of the gap is not diagnosed.
+
+## 2026-11-22 (nightly base, slow link on the second card)
 
 Two R9700, TP=2, MXFP4 target (W4A8), DFlash2-FP8 drafter with 7 draft tokens, fp8 KV, 262,144
 context, 8 sequences, 8192-token chunks, embed-host on, fp32 state cache.

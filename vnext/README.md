@@ -4,8 +4,8 @@ The radiance kernels (MXFP4 W4A8 GEMM, R4D attention and gated-delta-net, fp8 st
 all-reduce, DFlash2 draft and verify heads, embed-host) as an overlay on a current vLLM build,
 for two Radeon AI PRO R9700 (gfx1201) at TP=2.
 
-- Status: serving on the development box since 2026-11-22 as a trial in real use, next to the
-  production serve (which is unchanged). Measurements against production: `RESULTS.md`.
+- Status: serving on the development box since 2026-11-22; on the vLLM v0.34.0 release since
+  2026-11-23 (before: nightly f8b29fab4). Measurements: `RESULTS.md`.
 - Base: see `BASE` (vLLM commit and the image it was tested on).
 - Derived from `../v032/` (the same overlay on vLLM 0.32.0). `v032/` is unchanged.
 - The production serve (`../serve-mxfp4.sh`, image `stilldeadcode/vllm-radiance:0.9.3`,
@@ -66,15 +66,30 @@ and the trade-off are in `RESULTS.md`.
 launcher's dry runs; on 0.9.3 the TP=1 and TP=2 containers differ in nothing else that applies to one
 card (the other difference, `RADIANCE_AR_MAX_KB`, sizes the all-reduce, which one card has none of).
 
-**Not measured on this base yet.** It builds, the overlay applies and verifies, and the command
-matches 0.9.3's, but it has not served on one card. There is no KV pin either (`KV_MEM` is unset, so
-vLLM sizes the cache with `GPU_UTIL` 0.95). `../up.sh` starts it on one card anyway, as the
-recommended path, and says that it is untested; `ONE_CARD=0.9.3` there falls back to the measured
-0.9.3 profile. What is still to test is listed in `../SERVING.md` ("One card on the current vLLM:
-still to test"). `tests/onecard-gate.sh` runs the gate on a free card: functional checks,
+**Measured 2026-11-23** (`RESULTS.md`, "One card on v0.34.0"): correct, the same KV pool and
+prefill as 0.9.3, but decode 10-35% slower. `KV_MEM` is pinned at 0.9.3's 8.5 GiB (247K
+tokens). `../up.sh` therefore keeps one card on 0.9.3; `ONE_CARD=vnext` there serves this. `tests/onecard-gate.sh` runs the gate on a free card: functional checks,
 answers after a cache hit, a soak, single-stream speed and the context grid, on 0.9.3 and on vnext
-one after the other; its header says what has to hold before one card switches over and how to pick
-`KV_MEM` from it.
+one after the other; its header says what has to hold before one card switches over.
+
+## Port to v0.34.0 (2026-11-23)
+
+The overlay was first built on the nightly f8b29fab4 (2026-11-20). Nightly tags are deleted after
+about five weeks, so it now targets the v0.34.0 release, which is about 1,100 commits behind that
+nightly. Each of the 26 patched files was three-way merged onto v0.34.0:
+
+| Result | Files |
+|---|---|
+| clean | 18 |
+| taken from the v0.32 overlay (v0.34.0 still has the v0.32 layout) | `_aiter_ops.py`, `kernels/linear/mxfp4/aiter.py` |
+| the v0.32 group-size search (same function signature as v0.32) | `v1/core/kv_cache_planning.py` |
+| dropped: `apply_flattened` does not exist in v0.34.0 | `model_executor/layers/linear.py` |
+| conflicts resolved by hand onto the v0.34.0 code | `layers/utils.py`, `model_loader/base_loader.py`, `v1/core/sched/scheduler.py`, `v1/worker/gpu/async_utils.py`, `v1/worker/gpu/model_runner.py` |
+
+The image's vLLM files are byte-identical to the v0.34.0 source, so `apply_overlay.py` replaces
+them with the patched copies; `verify_overlay.py` passes (25 modified + 28 new). Gate results on
+two cards and one card: `RESULTS.md`, first section. The nightly overlay is in the history at
+a0f2dd8^^ (`git show 3e9b5e9:vnext/BASE`).
 
 ## What changed against v032
 

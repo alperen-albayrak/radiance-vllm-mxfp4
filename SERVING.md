@@ -6,7 +6,7 @@ setting; this page is the day-to-day part.
 
 | | One R9700 | Two R9700 |
 |---|---|---|
-| Engine | current vLLM with this repo's overlay (`vnext/serve.sh`, image in `vnext/BASE`), **not yet tested on one card**; `ONE_CARD=0.9.3` serves the measured 0.9.3 single-GPU profile (`serve-tp1.sh`) instead | current vLLM with this repo's overlay (`vnext/serve.sh`, image in `vnext/BASE`) |
+| Engine | image `stilldeadcode/vllm-radiance:0.9.3`, single-GPU profile (`serve-tp1.sh`); `ONE_CARD=vnext` serves vLLM v0.34.0 instead (correct, but slower, see below) | vLLM v0.34.0 with this repo's overlay (`vnext/serve.sh`, image in `vnext/BASE`) |
 | Context | 220,000 tokens | 262,144 tokens |
 | Requests at once | 3 | 4 (`MAXSEQS`) |
 | Speed | see [One card or two](#one-card-or-two) | about 1.6x one card when generating, 1.75x when reading a prompt |
@@ -20,7 +20,8 @@ The same benchmark on both: BetterBench, Qwen3.8-27B native MXFP4, DFlash2 draft
 tokens, the 0.9.3 engine on both (README.md, "Performance": two cards measured 2026-08-30, one card
 2026-09-16 at a 210 W power cap with 65,536 context). The current-vLLM two-card serve that `up.sh`
 starts generates as fast as 0.9.3 and reads prompts 2-4% slower (vnext/RESULTS.md), so the two-card
-column holds for it within that margin.
+column holds for it within that margin. Measured on v0.34.0 with DaisyRose on 2026-11-23: 171 tok/s
+for one stream, 5,600 tok/s prefill at 8K tokens and 3,000 at 250K (vnext/RESULTS.md, first section).
 
 | | One R9700 | Two R9700 | Two / one |
 |---|--:|--:|--:|
@@ -79,10 +80,8 @@ cp local.env.example local.env        # and edit: MODELS, MODEL, PORT, ...
 ./down.sh        # stop, and show that the cards' memory is free again
 ```
 
-`up.sh` counts the usable cards and starts the current-vLLM serve on two cards (or the first two of
-more) or on one. On one card that serve is recommended but not tested yet (next section); if it does
-not start or misbehaves, `ONE_CARD=0.9.3 ./up.sh` (or `ONE_CARD=0.9.3` in `local.env`) serves the
-measured 0.9.3 single-GPU profile instead.
+`up.sh` counts the usable cards and picks the engine from the table above: two cards (or the first
+two of more) get vLLM v0.34.0, one card the 0.9.3 single-GPU profile (next section says why).
 `CARDS=1 ./up.sh` runs on one card on a two-card host, for example to keep the second card free.
 `./up.sh --print` shows the container command without starting anything.
 
@@ -102,24 +101,14 @@ two-card serve builds two kernel libraries and fetches libr4d into `~/.cache`, t
 builds libr4d. Allow 5-15 minutes; later starts take about two. `up.sh` waits up to 15 minutes and
 prints the log if the server stops on the way.
 
-## One card on the current vLLM: still to test
+## One card: why 0.9.3
 
-One card runs the 0.9.3 single-GPU profile carried over to the current vLLM: same settings, same
-kernels, and it builds and passes the overlay checks. It has not served on one card yet, and the
-speed figures for one card on this page are 0.9.3's. Before it counts as tested:
-
-1. **Starts and answers** on one card: `vnext/tests/onecard-gate.sh` (needs one free card, ~3 hours)
-   runs everything below on 0.9.3 and on vnext, one after the other on the same card.
-2. **Correct:** the functional checks (tool call, tool result, image, streamed reasoning, JSON
-   schema), the right answer after a prefix-cache hit with thinking on and off, and a 20-minute soak
-   without a wrong answer or an error.
-3. **KV cache:** the pool vLLM sizes at `GPU_UTIL` 0.95 is at least 0.9.3's (~200,000 tokens at
-   220,000 context); then pin it as `KV_MEM` for one card, as two cards have.
-4. **Speed:** decode per session within ~3% of 0.9.3 and prefill within ~5%, the bar the two-card
-   port was held to (vnext/RESULTS.md).
-5. **Long context:** a 200,000-token prompt prefills and is served from the cache on the next turn.
-
-Until then 0.9.3 is the safe choice on one card (`ONE_CARD=0.9.3`).
+One card on vLLM v0.34.0 (`ONE_CARD=vnext ./up.sh`) was measured against 0.9.3 on the same card
+on 2026-11-23 (`vnext/tests/onecard-gate.sh`; vnext/RESULTS.md, "One card on v0.34.0"). It is
+correct (functional checks, answers after a prefix-cache hit, a 20-minute soak), holds the same KV
+cache (247K tokens) and reads prompts of 8K tokens and more as fast. It decodes slower: 93.5 against
+106 tok/s for one stream, and 10-35% behind with one or two sessions. Until that gap is found, 0.9.3
+is the faster engine on one card.
 
 ## Switching models
 
@@ -148,3 +137,4 @@ what was built for it.
 | `port 8080 is already in use` | another server holds the port: stop it, or set `PORT` |
 | `the server stopped while starting` | the log is printed above the message; out-of-memory at start usually means something else holds VRAM (`./down.sh` lists what each card uses) |
 | a card is missing | `./gpu-detect.sh` shows which cards it sees and why one is skipped |
+| prompts read much slower than the figures here | a card's PCIe link may have trained low at boot (seen here: one card at PCIe 2.0 instead of 5.0, prefill capped until a reboot). While the server is busy, `cat /sys/bus/pci/devices/<root port>/current_link_speed` for each card's upstream port (`lspci -tv` shows the path); an idle card lowers its link on purpose |
