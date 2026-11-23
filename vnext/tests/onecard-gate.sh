@@ -10,6 +10,8 @@
 #   CARD [0]  MODELS [~/models]  MODEL [DaisyRose-27B-MXFP4-mtpfp8]  NAMES [DaisyRose-27B]
 #   PORT [8181]  ENGINES ["093 vnext"]  SOAK_MIN [20]  OUT [./onecard-gate-<date>]
 #   SIZES [1000,8000,32000,128000,200000]  SESSIONS [1,2,3]   bench_ctx.py grid
+#   CORPUS                           .py tree the bench prompts are cut from (default: this repository)
+#   CARD may name two cards (CARD=0,1): the same gate for a two-card serve (vnext only)
 # What decides that one card on vnext is tested (SERVING.md lists the same): every functional and soak check passes, the
 # KV pool is at least 0.9.3's, decode per session within ~3% and prefill within ~5% (the
 # two-card port's own bar, RESULTS.md). The KV size it logs is what KV_MEM should then pin.
@@ -60,7 +62,7 @@ for e in $ENGINES; do
   say "   soak ${SOAK_MIN} min: $(grep '^RESULT' "$d/soak.txt")"
   python3 "$HERE/specdec_compare.py" "$e" "$model" "$d/specdec.json" "$URL" > "$d/specdec.txt" 2>&1
   say "   one stream: $(tail -n 2 "$d/specdec.txt" | tr '\n' ' ' | cut -c1-200)"
-  python3 "$HERE/bench_ctx.py" "$model" "$d/bench_ctx.json" "$URL" > "$d/bench_ctx.txt" 2>&1
+  python3 "$HERE/bench_ctx.py" "$model" "$d/bench_ctx.json" "$URL" ${CORPUS:+"$CORPUS"} > "$d/bench_ctx.txt" 2>&1
   say "   context grid: $d/bench_ctx.txt"
   docker logs "$NAME" > "$d/server.log" 2>&1
   docker stop -t 30 "$NAME" >/dev/null

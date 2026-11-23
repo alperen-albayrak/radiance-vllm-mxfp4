@@ -1,1 +1,1 @@
-f8b29fab414884206460fe63b983ca34fc6e3e9b  vllm nightly 2026-11-20 (0.34.0rc1.dev1108), image vllm/vllm-openai-rocm:nightly-f8b29fab414884206460fe63b983ca34fc6e3e9b
+62d4bc3c7e33b1b6c906e233e6af2d3506c482ca  vllm v0.34.0 (release, 2026-11-16), image vllm/vllm-openai-rocm:v0.34.0

@@ -1,8 +1,8 @@
 diff --git a/vllm/_aiter_ops.py b/vllm/_aiter_ops.py
-index d9c1b2f611..ed76c2ce2a 100644
+index 0de86cf..029cb3a 100644
 --- a/vllm/_aiter_ops.py
 +++ b/vllm/_aiter_ops.py
-@@ -219,9 +219,9 @@ def is_aiter_found_and_supported() -> bool:
+@@ -217,9 +217,9 @@ def is_aiter_found_and_supported() -> bool:
      VLLM_ROCM_USE_AITER=0, while preventing unwanted JIT warnings for auto-discovery.
      """
      if current_platform.is_rocm() and IS_AITER_FOUND:
@@ -14,23 +14,8 @@ index d9c1b2f611..ed76c2ce2a 100644
      return False
  
  
-@@ -945,6 +945,14 @@ def _rocm_aiter_mxfp4_gemm_dynamic_quant_impl(
-     )
-     from aiter.ops.triton.quant import dynamic_mxfp4_quant
- 
-+    # --- radiance (patch_quark_mxfp4.py): aiter allowlists gfx950/gfx1250 for fp4; gfx1201
-+    # lowers tl.dot_scaled correctly (verified bit-identical against the emulated path), so
-+    # relax the assert. Done here, lazily, to keep aiter out of the plugin-load import graph.
-+    import aiter.ops.triton.utils._triton.arch_info as _radiance_arch
-+
-+    if not _radiance_arch.is_fp4_avail():
-+        _radiance_arch.is_fp4_avail = lambda: True
-+
-     M = x.shape[0]
-     N = weight.shape[0]
-     K = weight.shape[1]
 diff --git a/vllm/compilation/passes/fusion/rocm_aiter_fusion.py b/vllm/compilation/passes/fusion/rocm_aiter_fusion.py
-index f3167afa71..746c16c123 100644
+index 955a305..76f6e06 100644
 --- a/vllm/compilation/passes/fusion/rocm_aiter_fusion.py
 +++ b/vllm/compilation/passes/fusion/rocm_aiter_fusion.py
 @@ -181,6 +181,17 @@ class AiterFusedAddRMSNormDynamicQuantPattern(AiterRMSNormQuantPattern):
@@ -52,10 +37,10 @@ index f3167afa71..746c16c123 100644
      """This pattern fuses aiter rms_norm & group fp8 quant custom
      ops into an aiter rms_norm_group_fp8_quant op.
 diff --git a/vllm/config/model.py b/vllm/config/model.py
-index 07e1aef1cd..931d6209a2 100644
+index bfc9925..1228b49 100644
 --- a/vllm/config/model.py
 +++ b/vllm/config/model.py
-@@ -714,6 +714,17 @@ class ModelConfig:
+@@ -708,6 +708,17 @@ class ModelConfig:
          if dict_overrides:
              self._apply_dict_overrides(hf_config, dict_overrides)
          self.hf_text_config = get_hf_text_config(self.hf_config)
@@ -74,16 +59,47 @@ index 07e1aef1cd..931d6209a2 100644
          self.attention_chunk_size = getattr(
              self.hf_text_config, "attention_chunk_size", None
 diff --git a/vllm/model_executor/kernels/linear/mxfp4/aiter.py b/vllm/model_executor/kernels/linear/mxfp4/aiter.py
-index ba7c6c96df..991dc23869 100644
+index b2b1478..e648831 100644
 --- a/vllm/model_executor/kernels/linear/mxfp4/aiter.py
 +++ b/vllm/model_executor/kernels/linear/mxfp4/aiter.py
-@@ -46,7 +46,23 @@ class AiterMxfp4LinearKernel(MxFp4LinearKernel):
+@@ -49,10 +49,26 @@ if is_aiter_found_and_supported():
+         out_dtype: torch.dtype | None = torch.bfloat16,
+         x_scales: torch.Tensor | None = None,
+     ) -> torch.Tensor:
+-        from aiter.ops.triton.gemm_afp4wfp4 import (
+-            gemm_afp4wfp4,
+-            gemm_afp4wfp4_preshuffle,
+-        )
++        # --- radiance (patch_quark_mxfp4.py): aiter 0.1.17 moved this module; the
++        # aiter in a given nightly may have either layout, so try both.
++        try:
++            from aiter.ops.triton.gemm.basic.gemm_afp4wfp4 import (
++                gemm_afp4wfp4,
++                gemm_afp4wfp4_preshuffle,
++            )
++        except ImportError:
++            from aiter.ops.triton.gemm_afp4wfp4 import (
++                gemm_afp4wfp4,
++                gemm_afp4wfp4_preshuffle,
++            )
++
++        # aiter allowlists gfx950/gfx1250 for fp4; gfx1201 lowers tl.dot_scaled correctly
++        # (verified bit-identical against the emulated path), so relax the assert. Done
++        # here, lazily, to keep aiter out of the plugin-load import graph.
++        import aiter.ops.triton.utils._triton.arch_info as _radiance_arch
++
++        if not _radiance_arch.is_fp4_avail():
++            _radiance_arch.is_fp4_avail = lambda: True
+         from aiter.ops.triton.quant import dynamic_mxfp4_quant
+ 
+         if rocm_use_aiter_fp4_asm_gemm:
+@@ -167,7 +183,23 @@ class AiterMxfp4LinearKernel(MxFp4LinearKernel):
      def is_supported(
          cls, compute_capability: int | None = None
      ) -> tuple[bool, str | None]:
 -        if not current_platform.supports_mx():
 +        # --- radiance (patch_quark_mxfp4.py): gfx1201 native MXFP4, RADIANCE_MXFP4=1 ---
-+        # supports_mx() is a CDNA4 allowlist, but Triton lowers tl.dot_scaled on gfx12x
++        # supports_mx() is a CDNA4 allowlist, but Triton 3.6 lowers tl.dot_scaled on gfx12x
 +        # (upconvert + bf16 WMMA), verified bit-identical against the emulated path.
 +        _radiance_mx = current_platform.supports_mx()
 +        if not _radiance_mx:
@@ -103,7 +119,7 @@ index ba7c6c96df..991dc23869 100644
  
          from vllm._aiter_ops import is_aiter_found_and_supported
 diff --git a/vllm/model_executor/kernels/linear/scaled_mm/BlockScaledMMLinearKernel.py b/vllm/model_executor/kernels/linear/scaled_mm/BlockScaledMMLinearKernel.py
-index a41ca27d44..ae74112423 100644
+index f5f2a48..c9cd730 100644
 --- a/vllm/model_executor/kernels/linear/scaled_mm/BlockScaledMMLinearKernel.py
 +++ b/vllm/model_executor/kernels/linear/scaled_mm/BlockScaledMMLinearKernel.py
 @@ -113,7 +113,7 @@ class Fp8BlockScaledMMLinearKernel(
@@ -116,7 +132,7 @@ index a41ca27d44..ae74112423 100644
          if self.apply_input_quant:
              q_input, input_scale = self.quant_fp8(
 diff --git a/vllm/model_executor/kernels/linear/scaled_mm/triton.py b/vllm/model_executor/kernels/linear/scaled_mm/triton.py
-index cdb00b6127..2f3864cd1c 100644
+index cdb00b6..2f3864c 100644
 --- a/vllm/model_executor/kernels/linear/scaled_mm/triton.py
 +++ b/vllm/model_executor/kernels/linear/scaled_mm/triton.py
 @@ -205,14 +205,9 @@ class TritonFp8BlockScaledMMKernel(Fp8BlockScaledMMLinearKernel):
@@ -137,23 +153,8 @@ index cdb00b6127..2f3864cd1c 100644
  
  
  def _int8_scaled_mm_func(
-diff --git a/vllm/model_executor/layers/linear.py b/vllm/model_executor/layers/linear.py
-index cef74de966..554b019023 100644
---- a/vllm/model_executor/layers/linear.py
-+++ b/vllm/model_executor/layers/linear.py
-@@ -244,6 +244,10 @@ def apply_flattened(
-     Linear methods and kernels may assume 2D activations, but callers such as
-     the Transformers modeling backend pass `[batch, seq, hidden]` activations.
-     """
-+    # --- radiance: the fp8 stream hands a layer its input already quantized, as a 2D
-+    # (q, scale) tuple (radiance_arnq.py, radiance_mxfp4.py). Pass it through untouched.
-+    if isinstance(x, tuple):
-+        return fn(x)
-     if isinstance(x, QuantizedActivation):
-         if len(x.orig_shape) <= 2:
-             return fn(x)
 diff --git a/vllm/model_executor/layers/mamba/ops/causal_conv1d.py b/vllm/model_executor/layers/mamba/ops/causal_conv1d.py
-index d440fd07bc..85e1f65dac 100644
+index d440fd0..85e1f65 100644
 --- a/vllm/model_executor/layers/mamba/ops/causal_conv1d.py
 +++ b/vllm/model_executor/layers/mamba/ops/causal_conv1d.py
 @@ -12,6 +12,12 @@ from vllm.platforms import current_platform
@@ -183,10 +184,10 @@ index d440fd07bc..85e1f65dac 100644
          launch_pdl=current_platform.is_arch_support_pdl(),
      )
 diff --git a/vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py b/vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py
-index 4d1b0bca93..9f6b2412b1 100644
+index 3d17901..85c19fb 100644
 --- a/vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py
 +++ b/vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py
-@@ -167,6 +167,15 @@ class CompressedTensorsConfig(QuantizationConfig):
+@@ -164,6 +164,15 @@ class CompressedTensorsConfig(QuantizationConfig):
          if isinstance(layer, LinearBase):
              # collect schemes
              quant_scheme = self.get_scheme(layer=layer, layer_name=prefix)
@@ -202,7 +203,7 @@ index 4d1b0bca93..9f6b2412b1 100644
              input_tfms, output_tfms = get_linear_transform_schemes(
                  layer, prefix, self.transform_config, self.packed_modules_mapping
              )
-@@ -805,6 +814,14 @@ class CompressedTensorsConfig(QuantizationConfig):
+@@ -801,6 +810,14 @@ class CompressedTensorsConfig(QuantizationConfig):
                      "For NVFP4 weights, input quantization must also be NVFP4 "
                      "format, None for NVFP4A16"
                  )
@@ -217,7 +218,7 @@ index 4d1b0bca93..9f6b2412b1 100644
              return CompressedTensorsW4A4Fp4()
  
          if self._is_mxfp4_w4a8_fp8(weight_quant, input_quant):
-@@ -911,6 +928,14 @@ class CompressedTensorsConfig(QuantizationConfig):
+@@ -897,6 +914,14 @@ class CompressedTensorsConfig(QuantizationConfig):
                          CompressedTensorsW8A8Fp8.get_min_capability(), error=False
                      )
                  if is_fp8_w8a8_supported:
@@ -233,10 +234,10 @@ index 4d1b0bca93..9f6b2412b1 100644
                          weight_quant=weight_quant,
                          is_static_input_scheme=(
 diff --git a/vllm/model_executor/layers/utils.py b/vllm/model_executor/layers/utils.py
-index 2056c90a3c..373f041b05 100644
+index f3d693d..75df43a 100644
 --- a/vllm/model_executor/layers/utils.py
 +++ b/vllm/model_executor/layers/utils.py
-@@ -340,6 +340,10 @@ def wvsplitkrc_dispatch(n: int, k: int, m: int, cu_count: int) -> tuple[int, boo
+@@ -293,6 +293,10 @@ def wvsplitkrc_dispatch(n: int, k: int, m: int, cu_count: int) -> tuple[int, boo
      fits = N_p2 * m * k_rnd <= 128 * 1024 * 12 and CuNeeded <= cu_count
      return chunkk, fits
  
@@ -247,10 +248,10 @@ index 2056c90a3c..373f041b05 100644
  
  # On gfx11 a weight row stride that is a multiple of 2048 B makes the multi-row global
  # loads of a GEMM collide on the L2/MALL channel hash. Offsetting the stride by one
-@@ -488,6 +492,13 @@ def rocm_unquantized_gemm_impl(
+@@ -441,6 +445,13 @@ def rocm_unquantized_gemm_impl(
          return linear_batch_invariant(x, weight, bias)
  
-     from vllm.platforms.rocm import on_gfx1x, on_gfx9, on_gfx11, on_gfx950, on_rdna4
+     from vllm.platforms.rocm import on_gfx1x, on_gfx9, on_gfx11, on_gfx950
 +    # --- RADIANCE skinny GEMM kernel (patch_skinny_gemm.py) ---
 +    if (_radiance_gemm is not None and _radiance_gemm.ENABLED and bias is None
 +            and weight.dim() == 2 and x.dtype == torch.bfloat16
@@ -262,7 +263,7 @@ index 2056c90a3c..373f041b05 100644
      n = x.numel() // x.size(-1)
      m = weight.shape[0]
 diff --git a/vllm/model_executor/layers/vocab_parallel_embedding.py b/vllm/model_executor/layers/vocab_parallel_embedding.py
-index 3cdd289999..8b4ce6df07 100644
+index 0913d79..73f3d83 100644
 --- a/vllm/model_executor/layers/vocab_parallel_embedding.py
 +++ b/vllm/model_executor/layers/vocab_parallel_embedding.py
 @@ -285,6 +285,17 @@ class VocabParallelEmbedding(PluggableLayer):
@@ -284,27 +285,27 @@ index 3cdd289999..8b4ce6df07 100644
          self.org_vocab_size = org_num_embeddings or num_embeddings
          self.num_added_embeddings = num_embeddings - self.org_vocab_size
 diff --git a/vllm/model_executor/model_loader/base_loader.py b/vllm/model_executor/model_loader/base_loader.py
-index 6d9563e859..72bd27f359 100644
+index b2e5e33..ca57dd0 100644
 --- a/vllm/model_executor/model_loader/base_loader.py
 +++ b/vllm/model_executor/model_loader/base_loader.py
-@@ -129,6 +129,12 @@ class BaseModelLoader(ABC):
+@@ -122,6 +122,12 @@ class BaseModelLoader(ABC):
+             process_weights_after_loading(model, model_config, target_device)
+             log_online_quantization_time(vllm_config)
  
-                 process_weights_after_loading(model, model_config, target_device)
-                 log_online_quantization_time(vllm_config)
++            # --- RADIANCE embed-host (patch_embed_host.py) ---
++            if __import__("os").environ.get("RADIANCE_EMBED_HOST", "0") == "1":
++                import radiance_embed_host as _radiance_embed_host
 +
-+                # --- RADIANCE embed-host (patch_embed_host.py) ---
-+                if __import__("os").environ.get("RADIANCE_EMBED_HOST", "0") == "1":
-+                    import radiance_embed_host as _radiance_embed_host
++                _radiance_embed_host.maybe_offload(model, vllm_config, model_config)
 +
-+                    _radiance_embed_host.maybe_offload(model, vllm_config, model_config)
-             except Exception:
-                 # The model runner logs the backends of a loaded model. A
-                 # failed load never reaches it, but its selections were made.
+             gc.collect()
+             torch.accelerator.empty_cache()
+ 
 diff --git a/vllm/model_executor/model_loader/default_loader.py b/vllm/model_executor/model_loader/default_loader.py
-index 762b588efc..ce9678f5ad 100644
+index 4c6cb59..0992e26 100644
 --- a/vllm/model_executor/model_loader/default_loader.py
 +++ b/vllm/model_executor/model_loader/default_loader.py
-@@ -564,7 +564,18 @@ class DefaultModelLoader(BaseModelLoader):
+@@ -537,7 +537,18 @@ class DefaultModelLoader(BaseModelLoader):
          self._init_ep_weight_filter(model, model_config)
          self._init_mm_encoder_only_weight_filter(model, model_config)
  
@@ -325,10 +326,10 @@ index 762b588efc..ce9678f5ad 100644
          self.counter_after_loading_weights = time.perf_counter()
          logger.info_once(
 diff --git a/vllm/parser/engine/parser_engine.py b/vllm/parser/engine/parser_engine.py
-index 7fd8940607..514ff1f333 100644
+index c9fb372..5f2457d 100644
 --- a/vllm/parser/engine/parser_engine.py
 +++ b/vllm/parser/engine/parser_engine.py
-@@ -1250,6 +1250,19 @@ class ParserEngine(Parser):
+@@ -1217,6 +1217,19 @@ class ParserEngine(Parser):
                              "arg converter failed (extract): %s", raw_body[:80]
                          )
                          args_json = self._extract_args_json(raw_body, name)
@@ -349,7 +350,7 @@ index 7fd8940607..514ff1f333 100644
                      args_json = self._extract_args_json(raw_body, name)
              else:
 diff --git a/vllm/parser/qwen3.py b/vllm/parser/qwen3.py
-index da7cf2071b..7a55eb1035 100644
+index f99d54c..875b891 100644
 --- a/vllm/parser/qwen3.py
 +++ b/vllm/parser/qwen3.py
 @@ -356,7 +356,25 @@ class Qwen3Parser(ParserEngine):
@@ -380,10 +381,10 @@ index da7cf2071b..7a55eb1035 100644
              "parser_engine_config",
              qwen3_config(
 diff --git a/vllm/platforms/rocm.py b/vllm/platforms/rocm.py
-index d5d26dfcb5..1f3989bd4e 100644
+index 1778bf2..59b2487 100644
 --- a/vllm/platforms/rocm.py
 +++ b/vllm/platforms/rocm.py
-@@ -203,6 +203,10 @@ def _get_gcn_arch() -> str:
+@@ -201,6 +201,10 @@ def _get_gcn_arch() -> str:
      """Get GCN arch via amdsmi (no CUDA init), fallback to torch.cuda.
      Called once at module level; result stored in _GCN_ARCH.
      """
@@ -395,7 +396,7 @@ index d5d26dfcb5..1f3989bd4e 100644
          return _query_gcn_arch_from_amdsmi()
      except Exception as e:
 diff --git a/vllm/third_party/flash_linear_attention/ops/chunk.py b/vllm/third_party/flash_linear_attention/ops/chunk.py
-index cc7d78ea6f..8de988e708 100644
+index caf8b0c..b6877c2 100644
 --- a/vllm/third_party/flash_linear_attention/ops/chunk.py
 +++ b/vllm/third_party/flash_linear_attention/ops/chunk.py
 @@ -20,6 +20,11 @@ from .utils import FLA_CHUNK_SIZE, SUPPRESS_LEVEL, input_guard
@@ -410,7 +411,7 @@ index cc7d78ea6f..8de988e708 100644
  def chunk_gated_delta_rule_fwd(
      q: torch.Tensor,
      k: torch.Tensor,
-@@ -51,6 +56,16 @@ def chunk_gated_delta_rule_fwd(
+@@ -49,6 +54,16 @@ def chunk_gated_delta_rule_fwd(
      A = solve_tril(
          A=A, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices, output_dtype=k.dtype
      )
@@ -428,7 +429,7 @@ index cc7d78ea6f..8de988e708 100644
          k=k,
          v=v,
 diff --git a/vllm/third_party/flash_linear_attention/ops/solve_tril.py b/vllm/third_party/flash_linear_attention/ops/solve_tril.py
-index b0dbaf7759..286538f322 100644
+index b0dbaf7..286538f 100644
 --- a/vllm/third_party/flash_linear_attention/ops/solve_tril.py
 +++ b/vllm/third_party/flash_linear_attention/ops/solve_tril.py
 @@ -25,6 +25,16 @@ assert FLA_TRIL_PRECISION in ALLOWED_TRIL_PRECISIONS, (
@@ -516,18 +517,15 @@ index b0dbaf7759..286538f322 100644
      )
  
 diff --git a/vllm/v1/core/kv_cache_planning.py b/vllm/v1/core/kv_cache_planning.py
-index 592359949e..21d318db3a 100644
+index f1e4e78..a76e635 100644
 --- a/vllm/v1/core/kv_cache_planning.py
 +++ b/vllm/v1/core/kv_cache_planning.py
-@@ -399,8 +399,70 @@ def is_kv_cache_type_attention_free(configs: dict[str, KVCacheLayerConfig]) -> b
-     return not configs
+@@ -459,8 +459,62 @@ def is_kv_cache_type_attention_free(kv_cache_spec: dict[str, KVCacheSpec]) -> bo
+     return not kv_cache_spec
  
  
-+def _radiance_pick_group_size(layer_buckets, layer_configs, vllm_config, upstream):
-+    """Group size maximising usable KV cache. See patch_kv_group_size.py.
-+
-+    Ported from kv_cache_utils.py (v0.32): the buckets now hold layer names and
-+    `layer_configs` maps a name to its KVCacheLayerConfig."""
++def _radiance_pick_group_size(layer_buckets, spec_buckets, vllm_config, upstream):
++    """Group size maximising usable KV cache. See patch_kv_group_size.py."""
 +    import os
 +
 +    if os.environ.get("RADIANCE_KV_GROUP_OPT", "1") == "0":
@@ -539,19 +537,14 @@ index 592359949e..21d318db3a 100644
 +        return upstream
 +    try:
 +        sizes = [len(layers) for layers in layer_buckets]
-+        page = max(
-+            layer_configs[n].spec.page_size_bytes for layers in layer_buckets for n in layers
-+        )
++        page = max(s.page_size_bytes for specs in spec_buckets for s in specs)
 +        # Blocks one group of each bucket reserves for a worst-case request. This is the
 +        # term upstream ignores: a full-attention group costs cdiv(max_model_len,
 +        # block_size) blocks, a mamba group costs a handful, so splitting the expensive
 +        # bucket into more groups costs far more than a few padded layer slots.
 +        cost = [
-+            max(
-+                cdiv(layer_configs[n].max_memory_usage_bytes(vllm_config), page)
-+                for n in layers
-+            )
-+            for layers in layer_buckets
++            max(cdiv(s.max_memory_usage_bytes(vllm_config), page) for s in specs)
++            for specs in spec_buckets
 +        ]
 +    except Exception:  # never fail a serve over an optimisation
 +        return upstream
@@ -585,25 +578,26 @@ index 592359949e..21d318db3a 100644
 +
 +
  def _get_kv_cache_groups_uniform_page_size(
-     layer_configs: dict[str, KVCacheLayerConfig],
+     kv_cache_spec: dict[str, KVCacheSpec],
 +    vllm_config=None,
- ) -> list[KVCacheGroup]:
+ ) -> list[KVCacheGroupSpec]:
      """Generates the KV cache groups for hybrid models with multiple
      attention types but still with a uniform page size (physical memory per
-@@ -505,6 +567,12 @@ def _get_kv_cache_groups_uniform_page_size(
+@@ -576,6 +630,13 @@ def _get_kv_cache_groups_uniform_page_size(
          # layers while accommodating speculative decoding drafters that add
          # extra layers to one attention type.
          group_size = max_num_layers
 +    # --- radiance (patch_kv_group_size.py) ---
-+    # The rule above assumes an n:1 layer pattern; 48 GDN + 16 full + 5 drafter is not one.
-+    # Search for the size that maximises usable cache instead.
++    # The rule above assumes an n:1 layer pattern; 48 GDN + 16 full + 5 drafter is not one,
++    # and picking the smallest bucket (5) splits the 16 expensive full-attention layers
++    # across 4 groups. Search for the size that maximises usable cache instead.
 +    group_size = _radiance_pick_group_size(
-+        layer_buckets, layer_configs, vllm_config, group_size
++        layer_buckets, spec_buckets, vllm_config, group_size
 +    )
      grouped_layers = []
      for layers in layer_buckets:
          num_padding_layers = group_size - len(layers) % group_size
-@@ -1122,7 +1190,7 @@ def get_kv_cache_groups(
+@@ -1217,7 +1278,7 @@ def get_kv_cache_groups(
          if fallback_groups is None:
              raise
          return fallback_groups
@@ -613,10 +607,10 @@ index 592359949e..21d318db3a 100644
      # Add hidden-state layers back with page aligned to the common page.
      if hidden_specs:
 diff --git a/vllm/v1/core/sched/async_scheduler.py b/vllm/v1/core/sched/async_scheduler.py
-index 142c82e84c..657bd1b3db 100644
+index f59abc2..c7a80e4 100644
 --- a/vllm/v1/core/sched/async_scheduler.py
 +++ b/vllm/v1/core/sched/async_scheduler.py
-@@ -49,6 +49,12 @@ class AsyncScheduler(Scheduler):
+@@ -39,6 +39,12 @@ class AsyncScheduler(Scheduler):
              # Add placeholders for the new draft/spec tokens.
              # We will update the actual spec token ids in the worker process.
              request.spec_token_ids = spec_token_placeholders
@@ -630,10 +624,10 @@ index 142c82e84c..657bd1b3db 100644
              # Set the next step index in which this request is eligible to be
              # scheduled for decode (for PP microbatching).
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 0373c64773..27ddfba204 100644
+index 3dd7aa3..39203d8 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -775,6 +775,11 @@ class Scheduler(SchedulerInterface):
+@@ -784,6 +784,11 @@ class Scheduler(SchedulerInterface):
                  long_prefill_token_threshold, input_budget // num_eligible_reqs
              )
  
@@ -642,10 +636,10 @@ index 0373c64773..27ddfba204 100644
 +        if _RAD_BUSY_MIN > 0 and not any(not r.is_prefill_chunk for r in self.running):
 +            long_prefill_token_threshold = 0
 +
-         # First, schedule the RUNNING requests.
-         req_index = 0
-         while req_index < len(self.running) and token_budget > 0:
-@@ -804,7 +809,11 @@ class Scheduler(SchedulerInterface):
+         # Local prefill cadence: hold prefill until the interval since the last
+         # prefill-carrying step has elapsed, so decode runs in longer
+         # uninterrupted stretches. Mirrors the DP gate above, including its
+@@ -835,7 +840,11 @@ class Scheduler(SchedulerInterface):
                  req_index += 1
                  continue
  
@@ -658,7 +652,7 @@ index 0373c64773..27ddfba204 100644
                  # DP prefill balancing: defer this in-progress prefill chunk to a
                  # cadence-aligned step; decodes still run to fill this step.
                  req_index += 1
-@@ -826,7 +835,10 @@ class Scheduler(SchedulerInterface):
+@@ -857,7 +866,10 @@ class Scheduler(SchedulerInterface):
                  + request.num_output_placeholders
                  - request.num_computed_tokens
              )
@@ -670,17 +664,20 @@ index 0373c64773..27ddfba204 100644
                  num_new_tokens = long_prefill_token_threshold
              num_new_tokens = min(
                  num_new_tokens, token_budget, input_budget - draft_slots
-@@ -1329,6 +1341,9 @@ class Scheduler(SchedulerInterface):
-                 elif (
-                     defer_prefills
-                     and effective_computed_tokens < request.num_tokens - 1
-+                    and _radiance_long_prefill(
-+                        request.num_tokens - effective_computed_tokens
-+                    )
-                 ):
+@@ -1337,7 +1349,11 @@ class Scheduler(SchedulerInterface):
+                     # KVTransfer: loading remote KV, do not allocate for new work.
+                     assert num_external_computed_tokens > 0
+                     num_new_tokens = 0
+-                elif defer_prefills and num_computed_tokens < request.num_tokens - 1:
++                elif (
++                    defer_prefills
++                    and num_computed_tokens < request.num_tokens - 1
++                    and _radiance_long_prefill(request.num_tokens - num_computed_tokens)
++                ):
                      # DP prefill balancing: defer this step's local prefill
                      # compute to a cadence-aligned step.
-@@ -1371,7 +1386,10 @@ class Scheduler(SchedulerInterface):
+                     break
+@@ -1379,7 +1395,10 @@ class Scheduler(SchedulerInterface):
                              num_new_tokens = padded_num_tokens
                              pad_spec_decode = True
  
@@ -692,15 +689,15 @@ index 0373c64773..27ddfba204 100644
                          num_new_tokens = long_prefill_token_threshold
  
                      # chunked prefill has to be enabled explicitly to allow
-@@ -2452,6 +2470,7 @@ class Scheduler(SchedulerInterface):
+@@ -2399,6 +2418,7 @@ class Scheduler(SchedulerInterface):
                  num_sampled = self.num_sampled_tokens_per_step
                  num_accepted = max(len(generated_token_ids) - num_sampled, 0)
-                 num_rejected = len(scheduled_spec_token_ids) - num_accepted
+                 num_rejected = num_draft_tokens - num_accepted
 +                self._radiance_dynw_observe(request, num_accepted, num_draft_tokens)
                  # Rejections roll back num_computed_tokens (and, under async
                  # scheduling, num_output_placeholders, which covers the spec
                  # tokens). A stale rejection count predates the preemption
-@@ -3066,6 +3085,7 @@ class Scheduler(SchedulerInterface):
+@@ -3012,6 +3032,7 @@ class Scheduler(SchedulerInterface):
              request.spec_token_ids = self.structured_output_manager.trim_spec_tokens(
                  request, spec_token_ids
              )
@@ -708,7 +705,7 @@ index 0373c64773..27ddfba204 100644
  
      def update_draft_token_ids_in_output(
          self, draft_token_ids: DraftTokenIds, scheduler_output: SchedulerOutput
-@@ -3991,3 +4011,111 @@ class Scheduler(SchedulerInterface):
+@@ -3932,3 +3953,111 @@ class Scheduler(SchedulerInterface):
          self.failed_recving_kv_req_ids |= async_failed_req_ids
          # Return sync affected IDs to skip in update_from_output
          return sync_failed_req_ids
@@ -821,10 +818,10 @@ index 0373c64773..27ddfba204 100644
 +    Scheduler.schedule = _rt_schedule
 +    Scheduler.update_from_output = _rt_update
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 6c83d46bb1..2e33e5444c 100644
+index 0d68457..7597879 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
-@@ -3175,3 +3175,42 @@ class EngineCoreActor(EngineCoreActorMixin, EngineCoreProc):
+@@ -3141,3 +3141,42 @@ class EngineCoreActor(EngineCoreActorMixin, EngineCoreProc):
              log_stats,
              engine_index=dp_rank,
          )
@@ -868,13 +865,13 @@ index 6c83d46bb1..2e33e5444c 100644
 +
 +    EngineCore.__init__ = _rt_init
 diff --git a/vllm/v1/worker/gpu/async_utils.py b/vllm/v1/worker/gpu/async_utils.py
-index 21c5a8c220..4651f26b79 100644
+index f2c5109..00e1f96 100644
 --- a/vllm/v1/worker/gpu/async_utils.py
 +++ b/vllm/v1/worker/gpu/async_utils.py
-@@ -321,3 +321,30 @@ def stream(to_stream: torch.Stream, from_stream: torch.Stream):
+@@ -301,3 +301,30 @@ def stream(to_stream: torch.cuda.Stream, from_stream: torch.cuda.Stream):
          yield
      finally:
-         torch.accelerator.set_stream(from_stream)
+         torch.cuda.set_stream(from_stream)
 +
 +
 +# ---- RADIANCE step trace (patch_step_trace.py) ----------------------------------------------
@@ -903,13 +900,13 @@ index 21c5a8c220..4651f26b79 100644
 +
 +    AsyncOutput.get_output = _rt_get_output
 diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
-index 1f831da6ff..912815713d 100644
+index d885b6a..267cdbf 100644
 --- a/vllm/v1/worker/gpu/model_runner.py
 +++ b/vllm/v1/worker/gpu/model_runner.py
-@@ -421,6 +421,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -417,6 +417,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                     vllm_config=self.vllm_config,
                      model_config=self.vllm_config.model_config,
                  )
-             log_layer_backends(self.model, self.vllm_config.model_config)
 +            # RADIANCE (patch_gdn_merge_inproj.py): merge each GDN layer's two input
 +            # projections into one GEMM. Only for a freshly loaded model.
 +            if model is None:
@@ -918,7 +915,7 @@ index 1f831da6ff..912815713d 100644
              if self.lora_config:
                  self.model = self.load_lora_model(
                      self.model, self.vllm_config, self.device
-@@ -1757,7 +1762,17 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1727,7 +1732,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              logits = logits[:, : self.vocab_size]
          else:
              sample_hidden_states = hidden_states[input_batch.logits_indices]
@@ -927,7 +924,10 @@ index 1f831da6ff..912815713d 100644
 +            try:
 +                import radiance_verifyhead as _radiance_vh
 +                _radiance_vh.before_compute_logits(self, input_batch, grammar_output)
-+            except Exception:
++            except Exception as _e:
++                if not getattr(type(self), "_radiance_vh_err", False):
++                    type(self)._radiance_vh_err = True   # once: a radiance verify-head failure is not silent
++                    import traceback; traceback.print_exc()
 +                _radiance_vh = None
 +            try:
 +                logits = self.model_state.compute_sample_logits(sample_hidden_states)
@@ -938,12 +938,12 @@ index 1f831da6ff..912815713d 100644
          # A diffusion prefill has no logit rows even when a bitmask row
          # arrived for it.
 diff --git a/vllm/v1/worker/gpu/spec_decode/dflash/utils.py b/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
-index 87851aef20..40d6b9cfd3 100644
+index d32587d..baa7fe3 100644
 --- a/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
 +++ b/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
 @@ -42,9 +42,20 @@ def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
+         load_config=get_pp_safe_draft_load_config(get_draft_load_config(vllm_config)),
      )
-     draft_vllm_config = speculative_config.apply_draft_eplb_overrides(draft_vllm_config)
      with set_model_tag("dflash_head"):
 -        dflash_model = get_model(
 -            vllm_config=draft_vllm_config, model_config=draft_model_config
@@ -966,10 +966,10 @@ index 87851aef20..40d6b9cfd3 100644
      target_language_model = (
          target_model.get_language_model()
 diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
-index 8cf4c22970..48cd67d5a8 100644
+index 34eec4b..ab1aa8d 100644
 --- a/vllm/v1/worker/gpu_worker.py
 +++ b/vllm/v1/worker/gpu_worker.py
-@@ -1950,3 +1950,63 @@ def init_worker_distributed_environment(
+@@ -1866,3 +1866,63 @@ def init_worker_distributed_environment(
      # Init ec connector here before KV caches init
      # NOTE: We do not init KV caches for Encoder-only instance in EPD disagg mode
      ensure_ec_transfer_initialized(vllm_config)

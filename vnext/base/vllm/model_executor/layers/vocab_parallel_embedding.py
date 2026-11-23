@@ -119,7 +119,7 @@ def vocab_range_from_global_vocab_size(
     )
 
 
-@dataclass(slots=True)
+@dataclass
 class VocabParallelEmbeddingShardIndices:
     """Indices for a shard of a vocab parallel embedding."""
 

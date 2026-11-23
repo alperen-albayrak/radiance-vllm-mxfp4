@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the Radiance overlay (base: vLLM nightly f8b29fab4, 2026-11-20) to an installed vLLM (site-packages) or a vLLM source tree.
+"""Apply the Radiance overlay (base: vLLM v0.34.0, 62d4bc3c7) to an installed vLLM (site-packages) or a vLLM source tree.
 
 usage: apply_overlay.py [--dry-run] [--allow-skip] [SP]
   SP  directory that contains vllm/ (default: sysconfig purelib of this interpreter)
@@ -8,8 +8,8 @@ Stdlib only (the container needs neither git nor patch). All-or-nothing: every f
 in memory first; nothing is written unless every file succeeds (see --allow-skip).
 Per modified vLLM file:
   * already equal to the patched reference          -> NOOP
-  * equal to the f8b29fab4 base                     -> replace by the patched reference
-  * otherwise (a build that differs from f8b29fab4)  -> hunk-wise apply of base->patched:
+  * equal to the v0.34.0 base                       -> replace by the patched reference
+  * otherwise (a build that differs from v0.34.0)    -> hunk-wise apply of base->patched:
       each hunk's old block (context + removed lines) must occur exactly once in the target;
       if it does not, the context is trimmed step by step (max 2 lines per side, like
       patch --fuzz=2), still requiring a unique match. No match = FAIL for that file.
@@ -161,7 +161,7 @@ def main(argv):
             continue
         if cur == base:
             plan.append((path, pat))
-            print(f"  BASE   {path} (identical to f8b29fab4 -> patched copy)")
+            print(f"  BASE   {path} (identical to v0.34.0 -> patched copy)")
             continue
         if already_applied(cur, base, pat):
             print(f"  NOOP   {path} (hunks already present)")

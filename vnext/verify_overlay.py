@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify an applied Radiance overlay (base: vLLM nightly f8b29fab4, 2026-11-20).
+"""Verify an applied Radiance overlay (base: vLLM v0.34.0, 62d4bc3c7).
 
 usage: verify_overlay.py [SP]
 Checks (no vLLM import, no GPU needed):

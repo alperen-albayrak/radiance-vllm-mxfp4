@@ -10,6 +10,7 @@ from vllm.v1.worker.gpu.spec_decode.eagle.utils import (
     get_target_lm_head,
     maybe_share_target_embed,
 )
+from vllm.v1.worker.gpu.spec_decode.utils import get_pp_safe_draft_load_config
 
 
 def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Module:
@@ -38,9 +39,8 @@ def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
             if speculative_config.kv_cache_dtype is not None
             else vllm_config.cache_config
         ),
-        load_config=get_draft_load_config(vllm_config),
+        load_config=get_pp_safe_draft_load_config(get_draft_load_config(vllm_config)),
     )
-    draft_vllm_config = speculative_config.apply_draft_eplb_overrides(draft_vllm_config)
     with set_model_tag("dflash_head"):
         # --- RADIANCE 4-bit drafter weights (patch_dflash_w4.py) ---
         try:
