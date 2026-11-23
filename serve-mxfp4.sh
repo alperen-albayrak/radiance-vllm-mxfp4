@@ -113,6 +113,7 @@ Everything is an environment variable; these are the ones worth knowing.
   MXFP4_CUMODE=1            compile the MXFP4 GEMM .hip with -mcumode (A/B; output-identical)
   VLLM_NO_USAGE_STATS=1     vLLM usage telemetry (default off here); 0 re-enables it
   DRY_RUN=1                 print the container command instead of running it
+  GEN='{"temperature":0.7,"top_p":0.95,"top_k":20}'   sampling for requests that set none
   DETACH=1                  start in the background and return (logs: RUNTIME logs -f NAME)
   PREPARE_ONLY=1            do the one-time work (image, libr4d) and stop before serving
 
@@ -316,6 +317,8 @@ fi
 # has been gated on this box. It does not change the traced graph (same shape, dtype and device;
 # only the storage moves), so it shares the compile cache.
 EMBED_HOST=${RADIANCE_EMBED_HOST:-0}
+# Sampling for requests that set none (--override-generation-config).
+GEN=${GEN:-'{"temperature":0.7,"top_p":0.95,"top_k":20}'}
 GPU_IDS=${GPU_IDS:-$RAD_GPU_INDICES}
 # TP=3 via zero-weight dummy heads (radiance_tp3pad.py + patch_tp3_pad.py; TP3_PADDING_PLAN.md).
 # The checkpoint's head counts (24 q / 4 kv / 16 GDN-k / 48 GDN-v) do not divide by 3, so at
@@ -1170,6 +1173,6 @@ exec ${DRY_RUN:+echo} "$RUNTIME" run "${RT_FLAGS[@]}" --name "$NAME" --privilege
     --speculative-config "$SPEC_CFG" \
     $ASYNC_FLAG $EXTRA \
     --enable-prefix-caching --mamba-cache-mode align --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 \
-    --override-generation-config '{"temperature":0.7,"top_p":0.95,"top_k":20}' \
+    --override-generation-config "$GEN" \
     --chat-template "$CT_PATH" \
     ${PASSTHRU[@]+"${PASSTHRU[@]}"}

@@ -16,3 +16,6 @@ libr4d/
 # editor / os
 *.swp
 .DS_Store
+
+# ./up.sh settings of this host
+local.env

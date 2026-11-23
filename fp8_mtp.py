@@ -27,7 +27,7 @@ QuarkW8A8Fp8 wants weight fp8_e4m3 static per_channel + input_tensors fp8_e4m3 d
 input_scale is stored). Explicit layer names are used rather than a `*q_proj` glob, which would
 also match the body's 64 layers.
 """
-import json, shutil, struct, sys, pathlib
+import json, os, shutil, struct, sys, pathlib
 
 # Checked before importing torch, so a bare invocation on a host without it still explains itself.
 if len(sys.argv) != 3:
@@ -76,11 +76,47 @@ def load(p, hdr, base, name):
 def raw(t):
     return t.contiguous().view(torch.uint8).numpy().tobytes()
 
+AUX = ("generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json",
+       "merges.txt", "preprocessor_config.json", "processor_config.json",
+       "video_preprocessor_config.json", "chat_template.jinja")
+
+
+def copy_aux(src, dst):
+    for n in AUX:
+        if (src / n).exists():
+            shutil.copy(src / n, dst / n)
+
+
+def take_over(src, dst, hdr):
+    """A release that already ships the MTP head in FP8 and declares it (for example
+    abhinand/DaisyRose-27B-Quark-AWQ-MXFP4): the weights are used as they are (hard-linked when
+    source and destination share a filesystem), only the config is normalised."""
+    wrong = [n for n in MTP if hdr.get(n + ".weight", {}).get("dtype") != "F8_E4M3"]
+    if wrong:
+        sys.exit(f"{src}: layer_quant_config declares the MTP head FP8 but these weights are not: {wrong}")
+    target = dst / "model.safetensors"
+    if not target.exists():
+        try:
+            os.link(src / "model.safetensors", target)
+        except OSError:
+            shutil.copy(src / "model.safetensors", target)
+    cfg = json.loads((src / "config.json").read_text())
+    # The AWQ recipe in algo_config describes how the weights were made; it is metadata, already
+    # applied to them. AMD's own release ships it as null, the form this repo serves.
+    cfg["quantization_config"]["algo_config"] = None
+    (dst / "config.json").write_text(json.dumps(cfg, indent=2))
+    copy_aux(src, dst)
+    print(f"MTP head already FP8: {target} taken over unchanged, config.json normalised")
+
+
 def main(src_dir, dst_dir):
     src, dst = pathlib.Path(src_dir), pathlib.Path(dst_dir)
     dst.mkdir(parents=True, exist_ok=True)
     sf = src / "model.safetensors"
     hdr, base = read_header(sf)
+    declared = json.loads((src / "config.json").read_text())["quantization_config"].get("layer_quant_config") or {}
+    if all(n in declared for n in MTP):
+        return take_over(src, dst, hdr)
 
     new = {}
     print(f"{'tensor':34s} {'shape':>18} {'rel err':>9}   (MXFP4 was ~0.116)")
@@ -135,10 +171,6 @@ def main(src_dir, dst_dir):
     qc["layer_quant_config"] = {name: FP8_CFG for name in MTP}
     (dst / "config.json").write_text(json.dumps(cfg, indent=2))
     print(f"exclude {len(qc['exclude'])} entries; layer_quant_config {len(qc['layer_quant_config'])} fp8 layers")
-    for n in ("generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json",
-              "merges.txt", "preprocessor_config.json", "processor_config.json",
-              "video_preprocessor_config.json", "chat_template.jinja"):
-        if (src / n).exists():
-            shutil.copy(src / n, dst / n)
+    copy_aux(src, dst)
 
 main(sys.argv[1], sys.argv[2])

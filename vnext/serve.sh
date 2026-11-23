@@ -29,7 +29,9 @@
 #   EXTRA                            more `vllm serve` arguments
 #   ENVX                             a second env file, read after radiance-tp2.env (overrides it)
 #   STATE [~/.cache/radiance-vnext]  built kernels and compile caches, one subdirectory per image
-#   R4D_SRC [~/.cache/radiance-libr4d/b9e42ab-rx9]   libr4d source checkout
+#   R4D_SRC [~/.cache/radiance-libr4d/b9e42ab-rx9]   libr4d source checkout; when it does not exist
+#                                    it is cloned at the pinned commit and patched with
+#                                    ../r4d_radiance_extras_rx9.patch (the 0.9.3 launcher's rx9 build)
 #   DETACH [1]                       0 = stay attached and print the log
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(dirname "$HERE")
@@ -62,7 +64,15 @@ if [ -z "${SPEC+x}" ]; then
     SPEC=
   fi
 fi
-[ -d "$R4D_SRC" ] || die "libr4d source not found: $R4D_SRC"
+R4D_PIN=b9e42ab
+if [ ! -d "$R4D_SRC" ]; then
+  echo "[run] fetching libr4d $R4D_PIN (+rx9 patch) into $R4D_SRC" >&2
+  tmp="$R4D_SRC.partial"; rm -rf "$tmp"; mkdir -p "$(dirname "$R4D_SRC")"
+  git clone -q https://codeberg.org/StillDeadcode/libr4d.git "$tmp"
+  git -C "$tmp" checkout -q "$R4D_PIN"
+  git -C "$tmp" apply "$REPO/r4d_radiance_extras_rx9.patch"
+  mv "$tmp" "$R4D_SRC"   # only a complete, patched checkout gets the name
+fi
 [ -f "$REPO/$CHAT_TEMPLATE" ] || die "chat template not found: $REPO/$CHAT_TEMPLATE"
 
 # Kernels are built against one image's Python and ROCm, so they live per image.

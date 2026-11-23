@@ -10,9 +10,18 @@ set -euo pipefail
 MODELS=${MODELS:-$HOME/models}
 HF_CACHE=${HF_CACHE:-$HOME/.cache/huggingface}
 IMAGE=${IMAGE:-stilldeadcode/vllm-radiance:0.9.3}
-SRC_REPO=${SRC_REPO:-amd/Qwen3.8-27B-Quark-AWQ-MXFP4}
+# MODEL picks the target: qwen3.8 (AMD's release, the default) or daisyrose (RadixArk's
+# DaisyRose-27B, a fine-tune of Qwen3.8-27B, as abhinand's Quark MXFP4 release). SRC_REPO and SNAP
+# override what it picks.
+MODEL=${MODEL:-qwen3.8}
+case "$MODEL" in
+  qwen3.8)   SRC_REPO=${SRC_REPO:-amd/Qwen3.8-27B-Quark-AWQ-MXFP4}; SNAP=${SNAP:-$MODELS/Qwen3.8-27B-MXFP4-mtpfp8} ;;
+  daisyrose) SRC_REPO=${SRC_REPO:-abhinand/DaisyRose-27B-Quark-AWQ-MXFP4}; SNAP=${SNAP:-$MODELS/DaisyRose-27B-MXFP4-mtpfp8} ;;
+  *) echo "MODEL must be qwen3.8 or daisyrose (got: $MODEL)" >&2; exit 2 ;;
+esac
+# Same architecture, same processor: where processor_config.json comes from when a release lacks it.
+PROCESSOR_REPO=${PROCESSOR_REPO:-amd/Qwen3.8-27B-Quark-AWQ-MXFP4}
 DRAFT_REPO=${DRAFT_REPO:-tcclaviger/Qwen3.8-27B-DFlash2-FP8}
-SNAP=${SNAP:-$MODELS/Qwen3.8-27B-MXFP4-mtpfp8}
 DRAFTER=${DRAFTER:-$MODELS/Qwen3.8-27B-DFlash2-FP8}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -27,6 +36,7 @@ setup-mxfp4.sh -- one-time setup for the MXFP4 serve
   ./setup-mxfp4.sh              run every step that is not already done
   ./setup-mxfp4.sh --yes        don't ask before downloading (~40 GiB)
   ./setup-mxfp4.sh --no-drafter skip the DFlash2 drafter (then serve with SPEC_METHOD=mtp)
+  MODEL=daisyrose ./setup-mxfp4.sh   DaisyRose-27B instead of Qwen3.8-27B
 
 Environment:
   MODELS=~/models               where the checkpoints are written
@@ -143,7 +153,8 @@ step "4/6  build $SNAP"
 if [ -f "$SNAP/config.json" ]; then
   ok "already built"
 else
-  echo "  requantizing the MTP head to fp8 (~15 minutes, one file rewritten)."
+  echo "  requantizing the MTP head to fp8 (~15 minutes, one file rewritten) -- or, for a release"
+  echo "  that already ships it in fp8 (DaisyRose), taking the weights over as they are."
   echo "  This is not optional for AMD's release: its exclude list names the bf16 mtp.* layers"
   echo "  as tensor names (mtp.fc.weight) among module names, so quark's module match never"
   echo "  fires, the mxfp4 scheme lands on a bf16 head, and vLLM asserts on a half-width"
@@ -164,6 +175,16 @@ else
       --entrypoint python3 "$IMAGE" /repo/fp8_mtp.py "$CSRC" "$CSNAP"
   fi
   [ -f "$SNAP/config.json" ] || die "fp8_mtp.py did not produce $SNAP/config.json"
+  if [ ! -f "$SNAP/processor_config.json" ]; then
+    "$RUNTIME" run --rm --network=host -e HF_TOKEN="${HF_TOKEN:-}" \
+      -v "$HF_CACHE":/root/.cache/huggingface -v "$MODELS":/models \
+      --entrypoint python3 "$IMAGE" -c '
+import shutil, sys
+from huggingface_hub import hf_hub_download
+shutil.copy(hf_hub_download(sys.argv[1], "processor_config.json"), sys.argv[2])
+' "$PROCESSOR_REPO" "$CSNAP/processor_config.json"
+    ok "processor_config.json from $PROCESSOR_REPO"
+  fi
   ok "built"
 fi
 

@@ -63,6 +63,9 @@ requires building an image**.
 
 ## Quick start
 
+On one or two R9700s, [SERVING.md](SERVING.md) is the short path: `./setup-mxfp4.sh` once, then
+`./up.sh` and `./down.sh`.
+
 ### What you need
 
 | | |
