@@ -22,11 +22,11 @@
 #                                    long-context shape; one card also gets a 16-bit mamba state
 #                                    (bf16 conv, fp16 ssm), cudagraph sizes capped at MAXSEQS*8 and
 #                                    radiance-tp1.env
-#   KV_MEM [16535624090 / unset]     bytes of KV cache per card (15.4 GiB, what production's GPU_UTIL=0.90
+#   KV_MEM [16535624090 / 9126805504]     bytes of KV cache per card (15.4 GiB, what production's GPU_UTIL=0.90
 #                                    comes to). KV_MEM= lets vLLM size it from GPU_UTIL [0.90] instead:
 #                                    safer, but it keeps 3 GiB + the activation peak free on ROCm and
-#                                    the pool drops from ~846K to ~723K tokens. One card has no
-#                                    measured value on this base yet, so vLLM sizes it there.
+#                                    the pool drops from ~846K to ~723K tokens. One card: the 0.9.3
+#                                    single-GPU pin, 247K tokens.
 #   BUSY_CHUNK [1664]  PREFILL_EVERY [8]   keep other sessions decoding while one prefills a long
 #                                    prompt: with more than one request in flight a prompt gets at most
 #                                    BUSY_CHUNK tokens per step, and while anything is decoding only every
@@ -64,7 +64,9 @@ case "$TP" in
     # halve too (fp16 ssm state is what libr4d rx9's narrow GDN kernels take; the conv state must
     # be bf16). MAXSEQS 3 / CHUNK 2560 / MAXLEN 220000 is its long-context shape.
     MAXLEN=${MAXLEN:-220000}; MAXSEQS=${MAXSEQS:-3}; CHUNK=${CHUNK:-2560}; GPU_UTIL=${GPU_UTIL:-0.95}
-    KV_MEM=${KV_MEM-}
+    # 8.5 GiB, the 0.9.3 single-GPU pin: 247,052 KV tokens here, and it passed the one-card gate
+    # (2026-11-23). Left to itself vLLM keeps 3 GiB + the activation peak free and 220000 does not fit.
+    KV_MEM=${KV_MEM-9126805504}
     case " ${EXTRA:-} " in
       *--mamba-cache-dtype*|*--mamba-ssm-cache-dtype*) ;;
       *) EXTRA="--mamba-cache-dtype bfloat16 --mamba-ssm-cache-dtype float16 ${EXTRA:-}" ;;
