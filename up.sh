@@ -3,7 +3,8 @@
 # explains it.
 #
 #   ./up.sh            start (two cards: the current-vLLM serve in vnext/; one card: the 0.9.3
-#                      image's single-GPU profile), then wait until it answers
+#                      image's single-GPU profile, or vnext with ONE_CARD=vnext), then wait
+#                      until it answers
 #   ./up.sh --print    print the command it would run, start nothing
 #
 # Stop with ./down.sh. Everything else is local.env (copy local.env.example).
@@ -43,10 +44,16 @@ case "$CARDS" in
     # 4 parallel requests: as fast as 8 at 1-3 sessions, and ~1 GiB more VRAM free per card
     MAXSEQS=${MAXSEQS:-4} MODEL=$DIR DRY_RUN=$PRINT "$HERE/vnext/serve.sh" ;;
   1)
+    # One card stays on 0.9.3 until vnext has passed vnext/tests/onecard-gate.sh there.
+    if [ "${ONE_CARD:-0.9.3}" = vnext ]; then
+      echo "[up] one card ($GPUS): $DIR as '$SERVED_NAMES', current vLLM (vnext/), NOT YET MEASURED on one card"
+      MODEL=$DIR DRY_RUN=$PRINT "$HERE/vnext/serve.sh"
+    else
     echo "[up] one card ($GPUS): $DIR as '$SERVED_NAMES', image 0.9.3, single-GPU profile"
     # embed-host moves the 2.4 GiB input embedding to host memory: room for ~60k more KV tokens
     SNAP=$MODELS/$DIR RUNTIME=docker DETACH=1 RADIANCE_EMBED_HOST=${RADIANCE_EMBED_HOST:-1} \
-      DRY_RUN=$PRINT "$HERE/serve-tp1.sh" ;;
+      DRY_RUN=$PRINT "$HERE/serve-tp1.sh"
+    fi ;;
   *) die "CARDS must be 1 or 2 (got $CARDS)" ;;
 esac
 [ -n "$PRINT" ] && exit 0

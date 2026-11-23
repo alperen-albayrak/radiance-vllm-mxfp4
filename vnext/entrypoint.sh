@@ -30,6 +30,9 @@ python3 /overlay/verify_overlay.py
 if [ "${PREPARE_ONLY:-0}" = 1 ]; then echo "[vnext] prepared, no serve"; exit 0; fi
 
 ARGS=()
+# CAPTURE: cudagraph capture sizes, a JSON list (one card caps them; empty = vLLM's own list)
+COMPILE='"pass_config":{"fuse_norm_quant":true,"fuse_act_quant":true}'
+[ -n "${CAPTURE:-}" ] && COMPILE='"cudagraph_capture_sizes":'"$CAPTURE,$COMPILE"
 [ -n "${SPEC:-}" ] && ARGS+=(--speculative-config "$SPEC")
 [ "${TOOLS:-1}" = 1 ] && ARGS+=(--enable-auto-tool-choice --tool-call-parser qwen3_coder)
 # shellcheck disable=SC2086  # SERVED_NAMES and EXTRA are word lists on purpose
@@ -37,6 +40,6 @@ exec vllm serve "/models/$MODEL" --served-model-name $SERVED_NAMES --host "$HOST
   --kv-cache-dtype fp8 --tensor-parallel-size "$TP" --gpu-memory-utilization "$GPU_UTIL" \
   --max-model-len "$MAXLEN" --max-num-seqs "$MAXSEQS" --max-num-batched-tokens "$CHUNK" \
   --attention-backend CUSTOM "${ARGS[@]}" --no-async-scheduling \
-  --compilation-config '{"pass_config":{"fuse_norm_quant":true,"fuse_act_quant":true}}' \
+  --compilation-config "{$COMPILE}" \
   --enable-prefix-caching --enable-prompt-tokens-details --reasoning-parser qwen3 \
   --override-generation-config "$GEN" --chat-template "/patches/$CHAT_TEMPLATE" ${EXTRA:-}

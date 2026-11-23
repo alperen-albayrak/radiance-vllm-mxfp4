@@ -110,7 +110,7 @@ time between two chunks during the prefill.
 | **chunk 1664, every 8th step (default)** | 100K | 1823 | 8.9 | 0.8 s / 0.8 s |
 
 The default adds a radiance rule on top of vLLM's two options
-(`RADIANCE_BUSY_PREFILL_MIN_TOKENS=3328` in `radiance-tp2.env`): a prefill with at most that many
+(`RADIANCE_BUSY_PREFILL_MIN_TOKENS=3328` in `radiance.env`): a prefill with at most that many
 tokens left is neither capped nor deferred, and the cap applies only while something is
 decoding. Without the rule, three cold 32K prompts advanced in lockstep (mean first token 30.5 s
 instead of 22.7 s) and every short turn waited for its cadence slot. With it: three cold 32K

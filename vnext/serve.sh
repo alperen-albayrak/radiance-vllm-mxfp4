@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Serve an MXFP4 Qwen3.8-27B-class model with the radiance kernels on a current vLLM image
-# (overlay in this directory; base and image in ./BASE). Two R9700s, TP=2. See README.md.
+# (overlay in this directory; base and image in ./BASE). One or two R9700s: TP is the number of
+# cards in GPUS. See README.md; one card is not measured on this base yet (README, "One card").
 #
 #   ./serve.sh                       DaisyRose-27B + DFlash2-FP8 drafter, port 8080
 #   PORT=8090 NAME=radiance-test ./serve.sh      a second instance for tests (needs free GPUs)
@@ -13,12 +14,19 @@
 #   DRAFTER [Qwen3.8-27B-DFlash2-FP8]     DFlash drafter under MODELS; DRAFTER= serves without one
 #   SPEC                             full --speculative-config JSON; overrides DRAFTER
 #   SERVED_NAMES [DaisyRose-27B]     model name(s) clients ask for
-#   NAME [radiance-vnext]  PORT [8080]  HOST [0.0.0.0]  GPUS [0,1]
-#   MAXLEN [262144]  MAXSEQS [8]  CHUNK [8192]  TOOLS [1]
-#   KV_MEM [16535624090]             bytes of KV cache per card (15.4 GiB, what production's GPU_UTIL=0.90
+#   NAME [radiance-vnext]  PORT [8080]  HOST [0.0.0.0]  TOOLS [1]
+#   GPUS [0,1]                       HIP indices of the cards; one index serves on one card
+#   Two cards / one card:
+#   MAXLEN [262144 / 220000]  MAXSEQS [8 / 3]  CHUNK [8192 / 2560]  GPU_UTIL [0.90 / 0.95]
+#                                    the one-card values are the 0.9.3 single-GPU profile's
+#                                    long-context shape; one card also gets a 16-bit mamba state
+#                                    (bf16 conv, fp16 ssm), cudagraph sizes capped at MAXSEQS*8 and
+#                                    radiance-tp1.env
+#   KV_MEM [16535624090 / unset]     bytes of KV cache per card (15.4 GiB, what production's GPU_UTIL=0.90
 #                                    comes to). KV_MEM= lets vLLM size it from GPU_UTIL [0.90] instead:
 #                                    safer, but it keeps 3 GiB + the activation peak free on ROCm and
-#                                    the pool drops from ~846K to ~723K tokens.
+#                                    the pool drops from ~846K to ~723K tokens. One card has no
+#                                    measured value on this base yet, so vLLM sizes it there.
 #   BUSY_CHUNK [1664]  PREFILL_EVERY [8]   keep other sessions decoding while one prefills a long
 #                                    prompt: with more than one request in flight a prompt gets at most
 #                                    BUSY_CHUNK tokens per step, and while anything is decoding only every
@@ -27,7 +35,7 @@
 #   GEN ['{"temperature":0.7,"top_p":0.95,"top_k":20}']   default sampling for requests without their own
 #   R4D_AR [1]                       radiance all-reduce between the cards (0 = RCCL only)
 #   EXTRA                            more `vllm serve` arguments
-#   ENVX                             a second env file, read after radiance-tp2.env (overrides it)
+#   ENVX                             one more env file, read last (overrides radiance*.env)
 #   STATE [~/.cache/radiance-vnext]  built kernels and compile caches, one subdirectory per image
 #   R4D_SRC [~/.cache/radiance-libr4d/b9e42ab-rx9]   libr4d source checkout; when it does not exist
 #                                    it is cloned at the pinned commit and patched with
@@ -43,16 +51,39 @@ MODEL=${MODEL:-DaisyRose-27B-MXFP4-mtpfp8}
 DRAFTER=${DRAFTER-Qwen3.8-27B-DFlash2-FP8}
 SERVED_NAMES=${SERVED_NAMES:-DaisyRose-27B}
 NAME=${NAME:-radiance-vnext}; PORT=${PORT:-8080}; HOST=${HOST:-0.0.0.0}; GPUS=${GPUS:-0,1}
-MAXLEN=${MAXLEN:-262144}; MAXSEQS=${MAXSEQS:-8}; CHUNK=${CHUNK:-8192}; GPU_UTIL=${GPU_UTIL:-0.90}
-KV_MEM=${KV_MEM-16535624090}
+TP=$(awk -F, '{print NF}' <<<"$GPUS")
+ENV_FILES=(--env-file "$HERE/radiance.env")
+CAPTURE=
+case "$TP" in
+  2)
+    MAXLEN=${MAXLEN:-262144}; MAXSEQS=${MAXSEQS:-8}; CHUNK=${CHUNK:-8192}; GPU_UTIL=${GPU_UTIL:-0.90}
+    KV_MEM=${KV_MEM-16535624090} ;;
+  1)
+    # The 0.9.3 single-GPU profile (serve-mxfp4.sh, SINGLE_GPU_PROFILE), carried over unchanged.
+    # 16-bit mamba state: halves its page, so vLLM's attention block and the per-request floor
+    # halve too (fp16 ssm state is what libr4d rx9's narrow GDN kernels take; the conv state must
+    # be bf16). MAXSEQS 3 / CHUNK 2560 / MAXLEN 220000 is its long-context shape.
+    MAXLEN=${MAXLEN:-220000}; MAXSEQS=${MAXSEQS:-3}; CHUNK=${CHUNK:-2560}; GPU_UTIL=${GPU_UTIL:-0.95}
+    KV_MEM=${KV_MEM-}
+    case " ${EXTRA:-} " in
+      *--mamba-cache-dtype*|*--mamba-ssm-cache-dtype*) ;;
+      *) EXTRA="--mamba-cache-dtype bfloat16 --mamba-ssm-cache-dtype float16 ${EXTRA:-}" ;;
+    esac
+    # A decode batch has at most MAXSEQS*(draft tokens + 1) rows; larger graphs only take memory
+    # from the KV cache. With 7 draft tokens: 8 rows per sequence.
+    for s in 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128; do
+      [ "$s" -le $((MAXSEQS * 8)) ] && CAPTURE=${CAPTURE:+$CAPTURE,}$s
+    done
+    CAPTURE="[$CAPTURE]"
+    ENV_FILES+=(--env-file "$HERE/radiance-tp1.env") ;;
+  *) die "GPUS=$GPUS names $TP cards; this serve runs on one or two" ;;
+esac
 BUSY_CHUNK=${BUSY_CHUNK-1664}; PREFILL_EVERY=${PREFILL_EVERY-8}
 EXTRA="${KV_MEM:+--kv-cache-memory $KV_MEM }--long-prefill-token-threshold ${BUSY_CHUNK:-0} --prefill-schedule-interval ${PREFILL_EVERY:-1} ${EXTRA:-}"
 GEN=${GEN:-'{"temperature":0.7,"top_p":0.95,"top_k":20}'}
 STATE=${STATE:-$HOME/.cache/radiance-vnext}
 R4D_SRC=${R4D_SRC:-$HOME/.cache/radiance-libr4d/b9e42ab-rx9}
 CHAT_TEMPLATE=${CHAT_TEMPLATE:-qwen-fixed-v22.3.jinja}
-TP=$(awk -F, '{print NF}' <<<"$GPUS")
-[ "$TP" = 2 ] || die "this launcher and radiance-tp2.env are set up for two cards (GPUS=$GPUS)"
 
 [ -d "$MODELS/$MODEL" ] || die "target not found: $MODELS/$MODEL"
 if [ -z "${SPEC+x}" ]; then
@@ -84,7 +115,7 @@ CMD=(docker run --name "$NAME" --privileged --ipc host --network host --shm-size
   --cap-add SYS_PTRACE --security-opt seccomp=unconfined
   --device /dev/kfd --device /dev/dri
   --group-add "$(getent group video | cut -d: -f3)" --group-add "$(getent group render | cut -d: -f3)"
-  --env-file "$HERE/radiance-tp2.env" ${ENVX:+--env-file "$ENVX"}
+  "${ENV_FILES[@]}" ${ENVX:+--env-file "$ENVX"}
   -e ROCR_VISIBLE_DEVICES="$GPUS" -e HIP_VISIBLE_DEVICES="$HIP_IDS"
   -e RADIANCE_USE_R4D_AR="${R4D_AR:-1}"
   -e VLLM_CACHE_ROOT=/cache/vllm -e TORCHINDUCTOR_CACHE_DIR=/cache/inductor
@@ -92,7 +123,7 @@ CMD=(docker run --name "$NAME" --privileged --ipc host --network host --shm-size
   -e PREPARE_ONLY="${PREPARE_ONLY:-0}" -e MODEL="$MODEL" -e SERVED_NAMES="$SERVED_NAMES"
   -e HOST="$HOST" -e PORT="$PORT" -e TP="$TP" -e MAXLEN="$MAXLEN" -e MAXSEQS="$MAXSEQS"
   -e CHUNK="$CHUNK" -e GPU_UTIL="$GPU_UTIL" -e SPEC="$SPEC" -e GEN="$GEN" -e TOOLS="${TOOLS:-1}"
-  -e CHAT_TEMPLATE="$CHAT_TEMPLATE" -e EXTRA="${EXTRA:-}"
+  -e CHAT_TEMPLATE="$CHAT_TEMPLATE" -e EXTRA="${EXTRA:-}" -e CAPTURE="$CAPTURE"
   -v "$MODELS:/models:ro" -v "$REPO:/patches:ro" -v "$HERE:/overlay:ro" -v "$R4D_SRC:/r4d-src:ro"
   -v "$BUILD:/build" -v "$CACHE:/cache"
   --entrypoint bash "$IMAGE" /overlay/entrypoint.sh)

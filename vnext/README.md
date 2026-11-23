@@ -22,10 +22,11 @@ PREPARE_ONLY=1 DETACH=0 ./serve.sh           # build kernels, apply + verify ove
 `serve.sh` lists its environment variables at the top. It starts the image with
 `entrypoint.sh`, which builds `radiance_mxfp4_fp8.so` and `r4d.so` once per image (kept under
 `~/.cache/radiance-vnext/<image key>/build`), applies the overlay with `apply_overlay.py`,
-checks it with `verify_overlay.py` and runs `vllm serve`. Both GPUs must be free.
+checks it with `verify_overlay.py` and runs `vllm serve`. The cards named in `GPUS` must be free.
 
-`radiance-tp2.env` holds the radiance switches. They are the values the production launcher
-gives its container at TP=2, plus two lines that this vLLM/ROCm needs:
+`radiance.env` holds the radiance switches (`radiance-tp1.env` overrides them on one card). They are
+the values the production launcher gives its container at TP=2, plus two lines that this vLLM/ROCm
+needs:
 
 | Line | Why |
 |---|---|
@@ -51,10 +52,27 @@ else takes VRAM there, lower `KV_MEM` or set `KV_MEM=` to get vLLM's own sizing 
 Stock scheduling gives a decoding session one step per prefill step, so it nearly stops while
 another session prefills a long prompt (0.6 instead of 31 stream chunks per second for two
 minutes at 250K). `serve.sh` therefore passes `--long-prefill-token-threshold` (`BUSY_CHUNK`, 1664)
-and `--prefill-schedule-interval` (`PREFILL_EVERY`, 8), and `radiance-tp2.env` sets
+and `--prefill-schedule-interval` (`PREFILL_EVERY`, 8), and `radiance.env` sets
 `RADIANCE_BUSY_PREFILL_MIN_TOKENS=3328`, a radiance rule in `scheduler.py`: prefills with at most
 that many tokens left are exempt, and the cap applies only while something is decoding. Numbers
 and the trade-off are in `RESULTS.md`.
+
+### One card
+
+`GPUS=0 ./serve.sh` serves on one card with the 0.9.3 launcher's single-GPU profile carried over:
+16-bit mamba state (bf16 conv, fp16 ssm; libr4d rx9 has the narrow-state GDN kernels for it),
+`MAXSEQS` 3, `CHUNK` 2560, `MAXLEN` 220000, cudagraph sizes capped at `MAXSEQS` x 8, and
+`radiance-tp1.env` (the fused GDN step routed at 48 heads). These were captured from the 0.9.3
+launcher's dry runs; on 0.9.3 the TP=1 and TP=2 containers differ in nothing else that applies to one
+card (the other difference, `RADIANCE_AR_MAX_KB`, sizes the all-reduce, which one card has none of).
+
+**Not measured on this base yet.** It builds, the overlay applies and verifies, and the command
+matches 0.9.3's, but it has not served on one card. There is no KV pin either (`KV_MEM` is unset, so
+vLLM sizes the cache with `GPU_UTIL` 0.95). `../up.sh` therefore keeps one card on 0.9.3 unless
+`ONE_CARD=vnext` is set. `tests/onecard-gate.sh` runs the gate on a free card: functional checks,
+answers after a cache hit, a soak, single-stream speed and the context grid, on 0.9.3 and on vnext
+one after the other; its header says what has to hold before one card switches over and how to pick
+`KV_MEM` from it.
 
 ## What changed against v032
 
