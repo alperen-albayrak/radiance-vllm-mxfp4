@@ -2,9 +2,8 @@
 # up.sh -- start the server on one or two R9700s, with the settings in local.env. SERVING.md
 # explains it.
 #
-#   ./up.sh            start (two cards: the current-vLLM serve in vnext/; one card: the 0.9.3
-#                      image's single-GPU profile, or vnext with ONE_CARD=vnext), then wait
-#                      until it answers
+#   ./up.sh            start on the current vLLM (vnext/, one or two cards; ONE_CARD=0.9.3 serves
+#                      one card on the 0.9.3 image instead), then wait until it answers
 #   ./up.sh --print    print the command it would run, start nothing
 #
 # Stop with ./down.sh. Everything else is local.env (copy local.env.example).
@@ -44,9 +43,11 @@ case "$CARDS" in
     # 4 parallel requests: as fast as 8 at 1-3 sessions, and ~1 GiB more VRAM free per card
     MAXSEQS=${MAXSEQS:-4} MODEL=$DIR DRY_RUN=$PRINT "$HERE/vnext/serve.sh" ;;
   1)
-    # One card stays on 0.9.3 until vnext has passed vnext/tests/onecard-gate.sh there.
-    if [ "${ONE_CARD:-0.9.3}" = vnext ]; then
-      echo "[up] one card ($GPUS): $DIR as '$SERVED_NAMES', current vLLM (vnext/), NOT YET MEASURED on one card"
+    # vnext is the recommended engine, but on one card it has not been tested yet (SERVING.md,
+    # "One card on the current vLLM: still to test"); ONE_CARD=0.9.3 is the measured fallback.
+    if [ "${ONE_CARD:-vnext}" = vnext ]; then
+      echo "[up] one card ($GPUS): $DIR as '$SERVED_NAMES', current vLLM (vnext/)"
+      echo "[up] NOT YET TESTED on one card: if it fails, ONE_CARD=0.9.3 ./up.sh (SERVING.md)"
       MODEL=$DIR DRY_RUN=$PRINT "$HERE/vnext/serve.sh"
     else
     echo "[up] one card ($GPUS): $DIR as '$SERVED_NAMES', image 0.9.3, single-GPU profile"

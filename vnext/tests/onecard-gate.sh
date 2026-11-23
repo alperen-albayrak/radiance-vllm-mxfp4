@@ -10,7 +10,7 @@
 #   CARD [0]  MODELS [~/models]  MODEL [DaisyRose-27B-MXFP4-mtpfp8]  NAMES [DaisyRose-27B]
 #   PORT [8181]  ENGINES ["093 vnext"]  SOAK_MIN [20]  OUT [./onecard-gate-<date>]
 #   SIZES [1000,8000,32000,128000,200000]  SESSIONS [1,2,3]   bench_ctx.py grid
-# What decides "vnext replaces 0.9.3 on one card": every functional and soak check passes, the
+# What decides that one card on vnext is tested (SERVING.md lists the same): every functional and soak check passes, the
 # KV pool is at least 0.9.3's, decode per session within ~3% and prefill within ~5% (the
 # two-card port's own bar, RESULTS.md). The KV size it logs is what KV_MEM should then pin.
 set -uo pipefail

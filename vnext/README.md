@@ -68,8 +68,10 @@ card (the other difference, `RADIANCE_AR_MAX_KB`, sizes the all-reduce, which on
 
 **Not measured on this base yet.** It builds, the overlay applies and verifies, and the command
 matches 0.9.3's, but it has not served on one card. There is no KV pin either (`KV_MEM` is unset, so
-vLLM sizes the cache with `GPU_UTIL` 0.95). `../up.sh` therefore keeps one card on 0.9.3 unless
-`ONE_CARD=vnext` is set. `tests/onecard-gate.sh` runs the gate on a free card: functional checks,
+vLLM sizes the cache with `GPU_UTIL` 0.95). `../up.sh` starts it on one card anyway, as the
+recommended path, and says that it is untested; `ONE_CARD=0.9.3` there falls back to the measured
+0.9.3 profile. What is still to test is listed in `../SERVING.md` ("One card on the current vLLM:
+still to test"). `tests/onecard-gate.sh` runs the gate on a free card: functional checks,
 answers after a cache hit, a soak, single-stream speed and the context grid, on 0.9.3 and on vnext
 one after the other; its header says what has to hold before one card switches over and how to pick
 `KV_MEM` from it.
