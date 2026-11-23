@@ -1766,7 +1766,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             try:
                 import radiance_verifyhead as _radiance_vh
                 _radiance_vh.before_compute_logits(self, input_batch, grammar_output)
-            except Exception:
+            except Exception as _e:
+                if not getattr(type(self), "_radiance_vh_err", False):
+                    type(self)._radiance_vh_err = True   # once: a radiance verify-head failure is not silent
+                    import traceback; traceback.print_exc()
                 _radiance_vh = None
             try:
                 logits = self.model_state.compute_sample_logits(sample_hidden_states)

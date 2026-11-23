@@ -49,7 +49,7 @@ for e in $ENGINES; do
   if ! start "$e" > "$d/start.log" 2>&1; then
     docker logs "$NAME" > "$d/server.log" 2>&1; say "   did not start: $d/server.log"; docker rm -f "$NAME" >/dev/null 2>&1; continue
   fi
-  docker logs "$NAME" 2>&1 | grep -E "GPU KV cache size|Maximum concurrency|embed-host:|single-GPU profile|KV cache" | tee "$d/kv.txt" | sed 's/^/   /' | tee -a "$SUMMARY"
+  docker logs "$NAME" 2>&1 | grep -E "GPU KV cache size|Maximum concurrency|embed-host:|single-GPU profile ON" | tee "$d/kv.txt" | sed 's/^/   /' | tee -a "$SUMMARY"
   python3 "$HERE/functest.py" "$URL" "$model" > "$d/functest.txt" 2>&1
   say "   functest: $(grep -c '^PASS' "$d/functest.txt") pass, $(grep -c '^FAIL' "$d/functest.txt") fail"
   for t in 1 0; do

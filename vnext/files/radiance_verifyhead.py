@@ -116,7 +116,9 @@ def _arm(model):
         sys.stderr.write("[radiance.verifyhead] no (lm_head, logits_processor) pair found; off\n")
         return
     w = getattr(lm_head, "weight", None)
-    if w is None or w.dim() != 2 or float(w.data.abs().max()) == 0.0:
+    # "Live" = not all zeros. Checked in row blocks: abs()/!= 0 over the whole head would need a
+    # second head-sized buffer (2.4 GiB at TP=1), which a card full of KV cache does not have.
+    if w is None or w.dim() != 2 or not any(bool(blk.any()) for blk in w.data.split(8192)):
         _state["failed"] = True
         sys.stderr.write("[radiance.verifyhead] target lm_head not a live 2-D weight; off\n")
         return
@@ -210,7 +212,13 @@ def before_compute_logits(runner, input_batch, grammar_output) -> None:
     if not ENABLED or _dh is None or _state["failed"]:
         return
     if not _state["armed"]:
-        _arm(runner.model)
+        try:
+            _arm(runner.model)
+        except Exception as e:           # e.g. out of memory: give up once, do not retry every step
+            _state["failed"] = True
+            sys.stderr.write(f"[radiance.verifyhead] arming failed, exact head only: {e!r}\n")
+            sys.stderr.flush()
+            return
         if not _state["armed"]:
             return
     ok = _batch_is_safe(runner, input_batch, grammar_output)
